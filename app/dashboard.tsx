@@ -32,6 +32,7 @@ import {
   Smartphone,
   ScrollText,
   Sun,
+  Trophy,
   UsersRound,
   Webhook,
   X,
@@ -40,6 +41,7 @@ import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Switch } from "@/components/ui/switch";
@@ -181,6 +183,50 @@ type CatalogSearchResponse = {
   credentialsRequired?: boolean;
 };
 
+type RankedProduct = {
+  id: string;
+  position: number;
+  score: number;
+  reasons: string[];
+  title: string;
+  url?: string | null;
+  imageUrl?: string | null;
+  price?: number | null;
+  originalPrice?: number | null;
+  discountPercentage: number;
+  currency: string;
+  availableQuantity?: number | null;
+  soldQuantity?: number | null;
+  condition?: string | null;
+  categoryId?: string | null;
+  catalogProductId?: string | null;
+  officialStore?: string | null;
+  seller: { id?: string | number | null; nickname?: string | null; reputation?: string | null; powerSellerStatus?: string | null };
+  shipping: { free: boolean; full: boolean; logisticType?: string | null };
+  installments?: { quantity: number; amount?: number | null; rate?: number | null } | null;
+  attributes: Array<Record<string, unknown>>;
+  tags: string[];
+  promotionDetected: boolean;
+  bestSellerPosition?: number | null;
+  raw: Record<string, unknown>;
+};
+
+type RankingResponse = {
+  query?: string;
+  category?: { categoryId?: string | null; categoryName?: string | null; domainId?: string | null };
+  total?: number;
+  scanned?: number;
+  pagesScanned?: number;
+  pageLimit?: number;
+  truncated?: boolean;
+  medianPrice?: number;
+  averageDiscount?: number;
+  products?: RankedProduct[];
+  scoring?: string;
+  warning?: string | null;
+  error?: string;
+};
+
 type ModelContext = {
   registerTool: (tool: {
     name: string;
@@ -313,6 +359,10 @@ function catalogFilterLabels(value: unknown) {
   return [];
 }
 
+function formatMoney(value: number | null | undefined, currency = "BRL") {
+  return value == null ? "Não informado" : new Intl.NumberFormat("pt-BR", { style: "currency", currency }).format(value);
+}
+
 export default function Dashboard() {
   const [activeTab, setActiveTab] = useState("groups");
   const [theme, setTheme] = useState<"dark" | "light">("dark");
@@ -372,6 +422,13 @@ export default function Dashboard() {
   const [amazonClientSecret, setAmazonClientSecret] = useState("");
   const [mercadoLivreAccessToken, setMercadoLivreAccessToken] = useState("");
   const [catalogCredentialsSaving, setCatalogCredentialsSaving] = useState(false);
+  const [rankingUrl, setRankingUrl] = useState("https://lista.mercadolivre.com.br/_Container_beauty-perfumes-total");
+  const [rankingMaxPages, setRankingMaxPages] = useState("5");
+  const [rankingResult, setRankingResult] = useState<RankingResponse | null>(null);
+  const [rankingLoading, setRankingLoading] = useState(false);
+  const [rankingError, setRankingError] = useState("");
+  const [rankingSearch, setRankingSearch] = useState("");
+  const [selectedRankedProduct, setSelectedRankedProduct] = useState<RankedProduct | null>(null);
 
   async function loadData() {
     setLoading(true);
@@ -532,6 +589,13 @@ export default function Dashboard() {
     { value: catalogItems.length, label: "resultados exibidos", Icon: Search },
     { value: catalogTotal, label: "produtos encontrados", Icon: PackageSearch },
     { value: catalogSorts.length, label: "ordenações disponíveis", Icon: Settings2 },
+  ];
+  const rankingProducts = rankingResult?.products || [];
+  const filteredRankingProducts = rankingProducts.filter((product) => !rankingSearch.trim() || `${product.title} ${product.id} ${product.seller.nickname || ""}`.toLowerCase().includes(rankingSearch.trim().toLowerCase()));
+  const rankingStatItems = [
+    { value: rankingResult?.scanned || 0, label: "produtos analisados", Icon: PackageSearch },
+    { value: rankingResult?.pagesScanned || 0, label: "páginas percorridas", Icon: Database },
+    { value: `${rankingResult?.averageDiscount || 0}%`, label: "desconto médio", Icon: Trophy },
   ];
 
   const convertedAmazonUrl = useMemo(() => {
@@ -795,6 +859,28 @@ export default function Dashboard() {
     }
   }
 
+  async function analyzeMercadoLivreListing() {
+    if (!rankingUrl.trim()) return toast.error("Cole a URL da listagem do Mercado Livre.");
+    setRankingLoading(true);
+    setRankingError("");
+    setRankingResult(null);
+    try {
+      const response = await fetch("/api/catalog/mercadolivre-ranking", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: rankingUrl.trim(), maxPages: Number(rankingMaxPages) }),
+      });
+      const result = await response.json() as RankingResponse;
+      if (!response.ok) throw new Error(result.error || "Não foi possível analisar a listagem.");
+      setRankingResult(result);
+      toast.success(`${result.scanned || 0} produto(s) analisado(s) e ranqueado(s).`);
+    } catch (caught) {
+      setRankingError(caught instanceof Error ? caught.message : "Não foi possível analisar a listagem.");
+    } finally {
+      setRankingLoading(false);
+    }
+  }
+
   async function analyzeProductLinks() {
     if (!productInput.trim()) {
       toast.error("Cole uma mensagem ou um link para analisar.");
@@ -921,6 +1007,7 @@ export default function Dashboard() {
     products: ["Produtos encontrados", "Acompanhe cada link identificado, convertido e enviado."],
     catalog: ["Dados dos produtos", "Veja tudo o que foi extraído das ofertas enviadas da Amazon e do Mercado Livre."],
     discovery: ["Consultar produtos", "Pesquise recomendações, preços e filtros nos catálogos oficiais."],
+    ranking: ["Ranking Mercado Livre", "Analise uma listagem completa e encontre automaticamente as ofertas mais atrativas."],
     affiliates: ["Afiliados", "Defina como os links encontrados serão convertidos."],
     amazon: ["Gerador Amazon", "Cole links longos ou encurtados e gere versões limpas com seu Tracking ID."],
     mercadolivre: ["Gerador Mercado Livre", "Gere links com sua tag e sua sessão de afiliado."],
@@ -943,6 +1030,7 @@ export default function Dashboard() {
                 ["products", "Produtos", PackageSearch],
                 ["catalog", "Dados dos produtos", Database],
                 ["discovery", "Consultar produtos", Search],
+                ["ranking", "Ranking Mercado Livre", Trophy],
                 ["affiliates", "Afiliados", Link2],
                 ["amazon", "Gerador Amazon", ShoppingBag],
                 ["mercadolivre", "Gerador ML", KeyRound],
@@ -983,7 +1071,7 @@ export default function Dashboard() {
             </div>
 
           <div className="mb-6 grid grid-cols-3 overflow-hidden rounded-2xl border border-[#27322b] bg-[#0b100d] shadow-[0_18px_50px_rgba(0,0,0,.28)]">
-            {(activeTab === "products" ? productStatItems : activeTab === "catalog" ? catalogStatItems : activeTab === "discovery" ? discoveryStatItems : statItems).map(({ value, label, Icon }, index) => (
+            {(activeTab === "products" ? productStatItems : activeTab === "catalog" ? catalogStatItems : activeTab === "discovery" ? discoveryStatItems : activeTab === "ranking" ? rankingStatItems : statItems).map(({ value, label, Icon }, index) => (
               <div key={label} className={`px-3 py-4 sm:px-5 ${index ? "border-l border-[#27322b]" : ""}`}>
                 <Icon className="mb-2 size-4 text-[#00a947]" />
                 <p className="text-2xl font-extrabold tracking-tight">{value}</p>
@@ -1001,6 +1089,7 @@ export default function Dashboard() {
               <TabsTrigger value="products" className="h-10 min-w-28 rounded-lg px-4">Produtos</TabsTrigger>
               <TabsTrigger value="catalog" className="h-10 min-w-40 rounded-lg px-4">Dados dos produtos</TabsTrigger>
               <TabsTrigger value="discovery" className="h-10 min-w-40 rounded-lg px-4">Consultar produtos</TabsTrigger>
+              <TabsTrigger value="ranking" className="h-10 min-w-40 rounded-lg px-4 data-[state=active]:bg-[#ffe600] data-[state=active]:text-[#231f00]">Ranking ML</TabsTrigger>
               <TabsTrigger value="affiliates" className="h-10 min-w-28 rounded-lg px-4">Afiliados</TabsTrigger>
               <TabsTrigger value="amazon" className="h-10 min-w-36 rounded-lg px-4 data-[state=active]:bg-[#ff9900] data-[state=active]:text-[#111820]">Gerador Amazon</TabsTrigger>
               <TabsTrigger value="mercadolivre" className="h-10 min-w-32 rounded-lg px-4 data-[state=active]:bg-[#ffe600] data-[state=active]:text-[#231f00]">Gerador ML</TabsTrigger>
@@ -1302,6 +1391,53 @@ export default function Dashboard() {
                   </CardContent></Card>
                 </div>
               </div>
+            </TabsContent>
+
+            <TabsContent value="ranking" id="ranking-mercado-livre">
+              <div className="space-y-5">
+                <Card className="overflow-hidden border-[#4a4615] bg-[#0b100d] shadow-none">
+                  <CardHeader className="border-b border-[#34351c] bg-[linear-gradient(110deg,rgba(255,230,0,.12),transparent_62%)]">
+                    <div className="flex items-start gap-3"><div className="grid size-11 shrink-0 place-items-center rounded-xl bg-[#ffe600] text-[#231f00]"><Trophy className="size-5" /></div><div><CardTitle className="text-xl">Descobrir as melhores ofertas da página</CardTitle><CardDescription className="mt-1">Cole uma URL de listagem. O painel consulta a API oficial, percorre as páginas e cria um ranking próprio.</CardDescription></div></div>
+                  </CardHeader>
+                  <CardContent className="space-y-4 pt-5">
+                    <label className="block space-y-2 text-sm font-semibold">URL da listagem do Mercado Livre<Input value={rankingUrl} onChange={(event) => setRankingUrl(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void analyzeMercadoLivreListing(); }} placeholder="https://lista.mercadolivre.com.br/..." className="h-12 border-[#474831] bg-[#080c09]" /></label>
+                    <div className="grid gap-3 sm:grid-cols-[220px_minmax(0,1fr)] sm:items-end">
+                      <label className="space-y-2 text-sm font-semibold">Limite da análise<NativeSelect value={rankingMaxPages} onChange={(event) => setRankingMaxPages(event.target.value)}><NativeSelectOption value="3">Até 150 produtos</NativeSelectOption><NativeSelectOption value="5">Até 250 produtos</NativeSelectOption><NativeSelectOption value="10">Até 500 produtos</NativeSelectOption><NativeSelectOption value="20">Até 1.000 produtos</NativeSelectOption></NativeSelect></label>
+                      <Button onClick={() => void analyzeMercadoLivreListing()} disabled={rankingLoading} className="h-12 rounded-xl bg-[#ffe600] font-extrabold text-[#231f00] hover:bg-[#fff05a]">{rankingLoading ? <LoaderCircle className="animate-spin" /> : <Trophy />} {rankingLoading ? "Percorrendo as páginas..." : "Analisar e criar ranking"}</Button>
+                    </div>
+                    <p className="text-xs leading-5 text-[#94a69b]">A URL é usada para descobrir a busca e a categoria. O fragmento depois de <code>#</code> não altera a página consultada. O ranking é uma heurística do Promozap, não uma classificação oficial do Mercado Livre.</p>
+                    {rankingError && <div className="rounded-xl border border-[#784235] bg-[#21110e] p-3 text-sm leading-6 text-[#ffb0a7]">{rankingError}</div>}
+                  </CardContent>
+                </Card>
+
+                {rankingResult && <>
+                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                    <div className="rounded-xl border border-[#27322b] bg-[#0b100d] p-4"><p className="text-xs font-bold uppercase tracking-[.08em] text-[#718079]">Busca entendida</p><p className="mt-2 line-clamp-2 font-bold">{rankingResult.query || "—"}</p></div>
+                    <div className="rounded-xl border border-[#27322b] bg-[#0b100d] p-4"><p className="text-xs font-bold uppercase tracking-[.08em] text-[#718079]">Categoria</p><p className="mt-2 font-bold">{rankingResult.category?.categoryName || rankingResult.category?.categoryId || "Detectada pela busca"}</p></div>
+                    <div className="rounded-xl border border-[#27322b] bg-[#0b100d] p-4"><p className="text-xs font-bold uppercase tracking-[.08em] text-[#718079]">Mediana de preço</p><p className="mt-2 font-bold text-[#62ef8b]">{formatMoney(rankingResult.medianPrice)}</p></div>
+                    <div className="rounded-xl border border-[#27322b] bg-[#0b100d] p-4"><p className="text-xs font-bold uppercase tracking-[.08em] text-[#718079]">Cobertura</p><p className="mt-2 font-bold">{rankingResult.scanned?.toLocaleString("pt-BR")} de {rankingResult.total?.toLocaleString("pt-BR")}</p></div>
+                  </div>
+                  {rankingResult.warning && <div className="flex items-start gap-3 rounded-xl border border-[#66532e] bg-[#241d0c] p-4 text-sm leading-6 text-[#e6c47d]"><CircleAlert className="mt-0.5 size-4 shrink-0" /><span>{rankingResult.warning} Aumente o limite para ampliar a cobertura.</span></div>}
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div><h2 className="text-xl font-bold">Produtos ranqueados</h2><p className="mt-1 text-sm text-[#94a69b]">Clique em qualquer produto para abrir todos os dados recebidos.</p></div><div className="relative w-full sm:max-w-sm"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[#718079]" /><Input value={rankingSearch} onChange={(event) => setRankingSearch(event.target.value)} placeholder="Filtrar por nome, ID ou vendedor" className="h-11 border-[#34423a] bg-[#080c09] pl-10" /></div></div>
+                  <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+                    {filteredRankingProducts.map((product) => <button key={product.id} type="button" onClick={() => setSelectedRankedProduct(product)} className="group overflow-hidden rounded-2xl border border-[#27322b] bg-[#0b100d] text-left shadow-none transition hover:-translate-y-0.5 hover:border-[#777121] hover:shadow-[0_18px_45px_rgba(0,0,0,.28)]">
+                      <div className="relative aspect-[4/3] bg-white p-3">{product.imageUrl ? <img src={product.imageUrl} alt={product.title} className="h-full w-full object-contain transition duration-300 group-hover:scale-[1.03]" loading="lazy" /> : <div className="grid h-full place-items-center"><ShoppingBag className="size-9 text-[#607267]" /></div>}<div className="absolute left-3 top-3 rounded-full bg-[#ffe600] px-3 py-1 text-sm font-black text-[#231f00]">#{product.position}</div><div className="absolute right-3 top-3 rounded-full bg-[#07140b]/92 px-3 py-1 text-sm font-extrabold text-[#72f295]">{product.score}/100</div></div>
+                      <div className="space-y-3 p-4"><div className="flex flex-wrap gap-2">{product.discountPercentage > 0 && <Badge className="bg-[#24c75a] text-[#04140a]">-{product.discountPercentage}%</Badge>}{product.shipping.free && <Badge className="border border-[#2d8a4b] bg-[#153520] text-[#8af3a5]">Frete grátis</Badge>}{product.shipping.full && <Badge className="border border-[#365078] bg-[#14233a] text-[#9bc4ff]">Full</Badge>}</div><h3 className="line-clamp-3 min-h-[4.5rem] font-bold leading-6">{product.title}</h3><div><p className="text-2xl font-extrabold text-[#62ef8b]">{formatMoney(product.price, product.currency)}</p>{product.originalPrice && product.originalPrice > (product.price || 0) ? <p className="text-sm text-[#718079] line-through">{formatMoney(product.originalPrice, product.currency)}</p> : null}</div><div className="flex flex-wrap gap-1.5">{product.reasons.slice(0, 3).map((reason) => <span key={reason} className="rounded-md bg-[#151d18] px-2 py-1 text-[11px] text-[#a9b8ae]">{reason}</span>)}</div><p className="text-xs font-semibold text-[#ffe84a]">Ver detalhes completos →</p></div>
+                    </button>)}
+                  </div>
+                  {filteredRankingProducts.length === 0 && <div className="rounded-xl border border-dashed border-[#34423a] p-8 text-center text-sm text-[#94a69b]">Nenhum produto corresponde ao filtro.</div>}
+                </>}
+              </div>
+
+              <Dialog open={Boolean(selectedRankedProduct)} onOpenChange={(open) => { if (!open) setSelectedRankedProduct(null); }}>
+                <DialogContent className="max-h-[90vh] overflow-y-auto border-[#34423a] bg-[#090d0a] text-white sm:max-w-3xl">
+                  {selectedRankedProduct && <><DialogHeader><div className="mb-2 flex flex-wrap gap-2"><Badge className="bg-[#ffe600] text-[#231f00]">#{selectedRankedProduct.position} no ranking</Badge><Badge className="bg-[#153520] text-[#8af3a5]">Nota {selectedRankedProduct.score}/100</Badge>{selectedRankedProduct.bestSellerPosition && <Badge className="bg-[#3c2f08] text-[#ffe76b]">#{selectedRankedProduct.bestSellerPosition} mais vendido</Badge>}</div><DialogTitle className="pr-7 text-xl leading-7">{selectedRankedProduct.title}</DialogTitle><DialogDescription>Dados estruturados retornados pela API do Mercado Livre.</DialogDescription></DialogHeader>
+                    <div className="grid gap-5 md:grid-cols-[260px_minmax(0,1fr)]"><div className="aspect-square overflow-hidden rounded-xl bg-white p-3">{selectedRankedProduct.imageUrl ? <img src={selectedRankedProduct.imageUrl} alt={selectedRankedProduct.title} className="h-full w-full object-contain" /> : <div className="grid h-full place-items-center"><ShoppingBag className="size-10 text-[#607267]" /></div>}</div><div className="space-y-4"><div><p className="text-3xl font-black text-[#62ef8b]">{formatMoney(selectedRankedProduct.price, selectedRankedProduct.currency)}</p>{selectedRankedProduct.originalPrice && <p className="text-sm text-[#718079] line-through">{formatMoney(selectedRankedProduct.originalPrice, selectedRankedProduct.currency)}</p>}</div><div className="grid grid-cols-2 gap-2 text-sm">{[["ID", selectedRankedProduct.id], ["Vendidos", selectedRankedProduct.soldQuantity], ["Disponíveis", selectedRankedProduct.availableQuantity], ["Condição", selectedRankedProduct.condition], ["Vendedor", selectedRankedProduct.seller.nickname || selectedRankedProduct.seller.id], ["Reputação", selectedRankedProduct.seller.powerSellerStatus || selectedRankedProduct.seller.reputation], ["Categoria", selectedRankedProduct.categoryId], ["Catálogo", selectedRankedProduct.catalogProductId]].map(([label, value]) => <div key={String(label)} className="rounded-lg bg-[#111813] p-3"><p className="text-[11px] font-bold uppercase tracking-[.08em] text-[#718079]">{label}</p><p className="mt-1 break-all font-semibold">{value == null ? "—" : String(value)}</p></div>)}</div><div className="flex flex-wrap gap-2">{selectedRankedProduct.reasons.map((reason) => <Badge key={reason} className="border border-[#35513e] bg-[#102018] text-[#dff7e5]">{reason}</Badge>)}</div>{selectedRankedProduct.url && <Button asChild className="w-full bg-[#ffe600] font-bold text-[#231f00] hover:bg-[#fff05a]"><a href={selectedRankedProduct.url} target="_blank" rel="noreferrer"><ExternalLink /> Abrir no Mercado Livre</a></Button>}</div></div>
+                    {selectedRankedProduct.attributes.length > 0 && <div><p className="mb-3 text-xs font-bold uppercase tracking-[.1em] text-[#718079]">Ficha técnica</p><div className="grid gap-2 sm:grid-cols-2">{selectedRankedProduct.attributes.map((attribute, index) => <div key={`${String(attribute.id || attribute.name)}-${index}`} className="rounded-lg border border-[#27322b] bg-[#0d1310] px-3 py-2"><p className="text-xs text-[#718079]">{String(attribute.name || attribute.id || "Atributo")}</p><p className="mt-1 text-sm font-medium">{String(attribute.value_name || attribute.value_id || "—")}</p></div>)}</div></div>}
+                    <details className="rounded-xl border border-[#27322b] bg-[#080c09]"><summary className="cursor-pointer px-3 py-3 text-sm font-semibold">Ver resposta completa da API (JSON)</summary><div className="border-t border-[#27322b] p-3"><Button variant="outline" size="sm" onClick={() => { void navigator.clipboard.writeText(JSON.stringify(selectedRankedProduct, null, 2)); toast.success("Dados do produto copiados."); }} className="mb-3 border-[#34423a] bg-[#111813] text-white"><Copy /> Copiar JSON</Button><pre className="max-h-72 overflow-auto whitespace-pre-wrap break-all text-xs leading-5 text-[#8fd9a4]">{JSON.stringify(selectedRankedProduct, null, 2)}</pre></div></details>
+                  </>}
+                </DialogContent>
+              </Dialog>
             </TabsContent>
 
             <TabsContent value="affiliates" id="afiliados">
