@@ -417,10 +417,13 @@ export default function Dashboard() {
   const [catalogTotal, setCatalogTotal] = useState(0);
   const [catalogSearching, setCatalogSearching] = useState(false);
   const [catalogError, setCatalogError] = useState("");
-  const [catalogCredentials, setCatalogCredentials] = useState({ amazonConfigured: false, mercadoLivreConfigured: false });
+  const [catalogCredentials, setCatalogCredentials] = useState({ amazonConfigured: false, mercadoLivreConfigured: false, mercadoLivreAppConfigured: false, mercadoLivreExpiresAt: null as string | null, mercadoLivreUserId: null as string | null });
   const [amazonClientId, setAmazonClientId] = useState("");
   const [amazonClientSecret, setAmazonClientSecret] = useState("");
   const [mercadoLivreAccessToken, setMercadoLivreAccessToken] = useState("");
+  const [mercadoLivreClientId, setMercadoLivreClientId] = useState("1038957964690859");
+  const [mercadoLivreClientSecret, setMercadoLivreClientSecret] = useState("");
+  const [mercadoLivreConnecting, setMercadoLivreConnecting] = useState(false);
   const [catalogCredentialsSaving, setCatalogCredentialsSaving] = useState(false);
   const [rankingUrl, setRankingUrl] = useState("https://lista.mercadolivre.com.br/_Container_beauty-perfumes-total");
   const [rankingMaxPages, setRankingMaxPages] = useState("5");
@@ -816,19 +819,47 @@ export default function Dashboard() {
       const response = await fetch("/api/catalog/credentials", {
         method: "PUT",
         headers: { "Content-Type": "application/json", "X-Promozap-Admin-Token": whatsapp.instanceToken.trim() },
-        body: JSON.stringify({ amazonClientId, amazonClientSecret, mercadoLivreAccessToken }),
+        body: JSON.stringify({ amazonClientId, amazonClientSecret, mercadoLivreClientId, mercadoLivreClientSecret, mercadoLivreAccessToken }),
       });
       const result = await response.json() as { error?: string };
       if (!response.ok) throw new Error(result.error || "Não foi possível salvar as credenciais.");
       setAmazonClientId("");
       setAmazonClientSecret("");
       setMercadoLivreAccessToken("");
+      setMercadoLivreClientSecret("");
       await loadCatalogCredentialStatus();
       toast.success("Credenciais de catálogo salvas com criptografia.");
     } catch (caught) {
       toast.error(caught instanceof Error ? caught.message : "Não foi possível salvar as credenciais.");
     } finally {
       setCatalogCredentialsSaving(false);
+    }
+  }
+
+  async function connectMercadoLivre() {
+    if (!whatsapp.instanceToken.trim()) return toast.error("Informe o token da UAZAPI para autorizar a conexão.");
+    setMercadoLivreConnecting(true);
+    try {
+      if (mercadoLivreClientId.trim() || mercadoLivreClientSecret.trim()) {
+        const saveResponse = await fetch("/api/catalog/credentials", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", "X-Promozap-Admin-Token": whatsapp.instanceToken.trim() },
+          body: JSON.stringify({ mercadoLivreClientId, mercadoLivreClientSecret }),
+        });
+        const saved = await saveResponse.json() as { error?: string };
+        if (!saveResponse.ok) throw new Error(saved.error || "Não foi possível salvar as credenciais do aplicativo.");
+        setMercadoLivreClientSecret("");
+      }
+      const response = await fetch("/api/oauth/mercadolivre/start", {
+        method: "POST",
+        headers: { "X-Promozap-Admin-Token": whatsapp.instanceToken.trim() },
+      });
+      const result = await response.json() as { authorizationUrl?: string; error?: string };
+      if (!response.ok || !result.authorizationUrl) throw new Error(result.error || "Não foi possível iniciar a autorização.");
+      window.location.href = result.authorizationUrl;
+    } catch (caught) {
+      toast.error(caught instanceof Error ? caught.message : "Não foi possível conectar o Mercado Livre.");
+      setMercadoLivreConnecting(false);
     }
   }
 
@@ -957,6 +988,17 @@ export default function Dashboard() {
   useEffect(() => {
     if (activeTab === "discovery") void loadCatalogCredentialStatus();
   }, [activeTab]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const oauth = params.get("ml_oauth");
+    if (!oauth) return;
+    setActiveTab("discovery");
+    if (oauth === "success") toast.success("Mercado Livre conectado. A renovação do token será automática.");
+    else toast.error(params.get("ml_message") || "Não foi possível conectar o Mercado Livre.");
+    void loadCatalogCredentialStatus();
+    window.history.replaceState({}, "", `${window.location.pathname}#consultar-produtos`);
+  }, []);
 
   async function testWhatsappConnection() {
     if (!whatsapp.serverUrl.trim() || !whatsapp.instanceToken.trim()) {
@@ -1385,9 +1427,11 @@ export default function Dashboard() {
                     <div className="rounded-xl border border-[#27322b] bg-[#080c09] p-3"><div className="flex items-center justify-between"><p className="font-bold">Amazon Creators API</p><Badge className={catalogCredentials.amazonConfigured ? "bg-[#153520] text-[#8af3a5]" : "bg-[#2a230c] text-[#f4d35e]"}>{catalogCredentials.amazonConfigured ? "Conectada" : "Aguardando aprovação"}</Badge></div><p className="mt-2 text-xs leading-5 text-[#94a69b]">Sua conta mostra que ainda não está aprovada para criar credenciais. O painel já está pronto para recebê-las.</p></div>
                     <Input value={amazonClientId} onChange={(event) => setAmazonClientId(event.target.value)} placeholder="Amazon Credential ID" className="h-11 border-[#34423a] bg-[#080c09]" />
                     <Input type="password" value={amazonClientSecret} onChange={(event) => setAmazonClientSecret(event.target.value)} placeholder="Amazon Credential Secret" className="h-11 border-[#34423a] bg-[#080c09]" />
-                    <div className="rounded-xl border border-[#27322b] bg-[#080c09] p-3"><div className="flex items-center justify-between"><p className="font-bold">Mercado Livre API</p><Badge className={catalogCredentials.mercadoLivreConfigured ? "bg-[#153520] text-[#8af3a5]" : "bg-[#202622] text-[#c0c9c3]"}>{catalogCredentials.mercadoLivreConfigured ? "Token salvo" : "Consulta pública"}</Badge></div><p className="mt-2 text-xs leading-5 text-[#94a69b]">A busca tenta o catálogo público. Um Access Token oficial pode ser salvo se o Mercado Livre exigir autenticação.</p></div>
-                    <Input type="password" value={mercadoLivreAccessToken} onChange={(event) => setMercadoLivreAccessToken(event.target.value)} placeholder="Mercado Livre Access Token (opcional)" className="h-11 border-[#34423a] bg-[#080c09]" />
-                    <Button onClick={() => void saveCatalogCredentials()} disabled={catalogCredentialsSaving || (!amazonClientId && !amazonClientSecret && !mercadoLivreAccessToken)} variant="outline" className="w-full border-[#2e7041] bg-[#112a19] text-[#8ef1aa] hover:bg-[#183b24]">{catalogCredentialsSaving ? <LoaderCircle className="animate-spin" /> : <ShieldCheck />} Salvar com segurança</Button>
+                    <div className="rounded-xl border border-[#27322b] bg-[#080c09] p-3"><div className="flex items-center justify-between gap-3"><p className="font-bold">Mercado Livre API</p><Badge className={catalogCredentials.mercadoLivreConfigured ? "bg-[#153520] text-[#8af3a5]" : catalogCredentials.mercadoLivreAppConfigured ? "bg-[#2a230c] text-[#f4d35e]" : "bg-[#202622] text-[#c0c9c3]"}>{catalogCredentials.mercadoLivreConfigured ? "Conectada" : catalogCredentials.mercadoLivreAppConfigured ? "Pronta para autorizar" : "Aplicativo não configurado"}</Badge></div><p className="mt-2 text-xs leading-5 text-[#94a69b]">OAuth oficial com renovação automática. O Client Secret e os tokens ficam criptografados e não retornam ao navegador.</p>{catalogCredentials.mercadoLivreUserId && <p className="mt-2 text-xs font-semibold text-[#8af3a5]">Conta conectada · usuário {catalogCredentials.mercadoLivreUserId}</p>}</div>
+                    <Input value={mercadoLivreClientId} onChange={(event) => setMercadoLivreClientId(event.target.value)} placeholder="Mercado Livre Client ID" className="h-11 border-[#34423a] bg-[#080c09]" />
+                    <Input type="password" value={mercadoLivreClientSecret} onChange={(event) => setMercadoLivreClientSecret(event.target.value)} placeholder={catalogCredentials.mercadoLivreAppConfigured ? "Client Secret já salvo — preencha apenas para trocar" : "Mercado Livre Client Secret"} className="h-11 border-[#34423a] bg-[#080c09]" />
+                    <Button onClick={() => void connectMercadoLivre()} disabled={mercadoLivreConnecting || (!catalogCredentials.mercadoLivreAppConfigured && !mercadoLivreClientSecret)} className="w-full bg-[#ffe600] font-extrabold text-[#231f00] hover:bg-[#fff05a]">{mercadoLivreConnecting ? <LoaderCircle className="animate-spin" /> : <KeyRound />} {catalogCredentials.mercadoLivreConfigured ? "Reconectar Mercado Livre" : "Salvar e conectar Mercado Livre"}</Button>
+                    <details className="rounded-xl border border-[#27322b] bg-[#080c09]"><summary className="cursor-pointer px-3 py-3 text-xs font-semibold text-[#94a69b]">Opção avançada: colar Access Token manual</summary><div className="space-y-3 border-t border-[#27322b] p-3"><Input type="password" value={mercadoLivreAccessToken} onChange={(event) => setMercadoLivreAccessToken(event.target.value)} placeholder="Access Token temporário" className="h-11 border-[#34423a] bg-[#080c09]" /><Button onClick={() => void saveCatalogCredentials()} disabled={catalogCredentialsSaving || (!amazonClientId && !amazonClientSecret && !mercadoLivreAccessToken)} variant="outline" className="w-full border-[#2e7041] bg-[#112a19] text-[#8ef1aa] hover:bg-[#183b24]">{catalogCredentialsSaving ? <LoaderCircle className="animate-spin" /> : <ShieldCheck />} Salvar credenciais</Button></div></details>
                   </CardContent></Card>
                 </div>
               </div>

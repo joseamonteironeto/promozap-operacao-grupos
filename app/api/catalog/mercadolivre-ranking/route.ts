@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { readIntegrationSecret } from "@/lib/integration-secret";
+import { getMercadoLivreAccessToken } from "@/lib/mercadolivre-oauth";
 
 type MlRow = Record<string, any>;
 
@@ -207,7 +207,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Use uma URL HTTPS do Mercado Livre Brasil." }, { status: 400 });
     }
     const maxPages = Math.max(1, Math.min(20, Math.floor(Number(body.maxPages) || 5)));
-    const token = await readIntegrationSecret("mercadolivre_access_token");
+    const token = await getMercadoLivreAccessToken();
     const headers: HeadersInit = { Accept: "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) };
     const query = deriveQuery(sourceUrl);
     const explicitCategory = categoryFromUrl(sourceUrl);
@@ -259,6 +259,6 @@ export async function POST(request: Request) {
   } catch (error) {
     const message = error instanceof Error ? error.message : "Não foi possível analisar a listagem.";
     const auth = /unauthorized|forbidden|access token|oauth/i.test(message);
-    return NextResponse.json({ error: auth ? "O Mercado Livre exige um Access Token válido para esta consulta. Salve-o em Consultar produtos." : message }, { status: auth ? 412 : 502 });
+    return NextResponse.json({ error: auth ? "Conecte novamente o aplicativo do Mercado Livre em Consultar produtos." : message }, { status: auth ? 412 : 502 });
   }
 }

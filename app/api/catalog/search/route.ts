@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { NextResponse } from "next/server";
 import { searchAmazonProducts } from "@/lib/amazon-creators";
-import { readIntegrationSecret } from "@/lib/integration-secret";
+import { getMercadoLivreAccessToken } from "@/lib/mercadolivre-oauth";
 
 function numberParam(value: string | null) {
   const parsed = Number(value);
@@ -13,7 +13,7 @@ function mlImage(url: unknown) {
 }
 
 async function searchMercadoLivre(params: URLSearchParams) {
-  const token = await readIntegrationSecret("mercadolivre_access_token");
+  const token = await getMercadoLivreAccessToken();
   const headers: HeadersInit = { Accept: "application/json" };
   if (token) headers.Authorization = `Bearer ${token}`;
   let query = params.get("q")?.trim() || "";
@@ -38,7 +38,7 @@ async function searchMercadoLivre(params: URLSearchParams) {
   const data = await response.json().catch(() => ({})) as Record<string, any>;
   if (!response.ok) {
     if (!token && (response.status === 401 || response.status === 403)) {
-      throw new Error("O Mercado Livre exige um Access Token oficial para esta consulta. Crie uma aplicação no DevCenter e salve o token nesta aba.");
+      throw new Error("Conecte o aplicativo do Mercado Livre nesta aba para liberar a consulta oficial.");
     }
     throw new Error(data.message || `O Mercado Livre recusou a consulta (HTTP ${response.status}).`);
   }
