@@ -11,6 +11,7 @@ Painel mobile-first para monitorar grupos de ofertas no WhatsApp, identificar pr
 - geração de links do Mercado Livre usando uma sessão autorizada pelo próprio operador;
 - renovação oportunista dos cookies do Mercado Livre quando a resposta oficial envia `Set-Cookie`;
 - extração de imagem e dados de produto;
+- coletor local opcional que abre o Chrome e lê preço, Pix, cupom, estoque e ficha técnica diretamente da página do Mercado Livre;
 - interface responsiva com temas claro e escuro.
 
 ## Segurança
@@ -35,6 +36,10 @@ pnpm dev
 ```
 
 O painel utiliza Cloudflare D1. As migrações estão em `drizzle/` e as ligações do Sites ficam em `.openai/hosting.json`.
+
+### Coletor local do Mercado Livre
+
+Quando a API não autoriza a consulta de anúncios de terceiros, execute `local-collector/iniciar-coletor.cmd` e use a seção **Consultar produtos → Coletor pelo navegador**. Consulte `local-collector/README.md` para o passo a passo. A sessão dedicada do Chrome e o token local ficam ignorados pelo Git.
 
 ## Variáveis de ambiente
 

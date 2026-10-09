@@ -208,6 +208,47 @@ type CatalogSearchResponse = {
   warning?: string | null;
 };
 
+type LocalCollectorProduct = {
+  ok?: boolean;
+  needsUserAction?: boolean;
+  userActionMessage?: string | null;
+  capturedAt?: string;
+  canonicalUrl?: string | null;
+  url?: string | null;
+  title?: string | null;
+  itemId?: string | null;
+  userProductId?: string | null;
+  brand?: string | null;
+  currency?: string | null;
+  price?: number | null;
+  pixPrice?: number | null;
+  standardPrice?: number | null;
+  originalPrice?: number | null;
+  discountPercentage?: number | null;
+  discountText?: string | null;
+  coupon?: { text?: string | null; price?: number | null } | null;
+  installments?: Record<string, unknown> | null;
+  availability?: string | null;
+  condition?: string | null;
+  soldText?: string | null;
+  availableQuantity?: number | null;
+  stockText?: string | null;
+  seller?: string | null;
+  sellerSales?: string | null;
+  officialStore?: string | null;
+  deliveryText?: string | null;
+  freeShipping?: boolean;
+  ratingText?: string | null;
+  imageUrl?: string | null;
+  images?: string[];
+  categories?: string[];
+  highlighted?: string[];
+  attributes?: Array<{ name?: string; value_name?: string }>;
+  description?: string | null;
+  personalizedContext?: Record<string, unknown>;
+  structuredData?: Record<string, unknown>;
+};
+
 type MercadoLivreCategory = { id: string; name: string };
 
 type RankedProduct = {
@@ -450,6 +491,13 @@ export default function Dashboard() {
   const [catalogSearching, setCatalogSearching] = useState(false);
   const [catalogError, setCatalogError] = useState("");
   const [catalogWarning, setCatalogWarning] = useState("");
+  const [localCollectorUrl, setLocalCollectorUrl] = useState("http://127.0.0.1:8765");
+  const [localCollectorToken, setLocalCollectorToken] = useState("");
+  const [localCollectorInput, setLocalCollectorInput] = useState("https://www.mercadolivre.com.br/o-boticario-zaad-infinity-eau-de-parfum-95ml/up/MLBU4815336108");
+  const [localCollectorConnected, setLocalCollectorConnected] = useState(false);
+  const [localCollectorLoading, setLocalCollectorLoading] = useState(false);
+  const [localCollectorError, setLocalCollectorError] = useState("");
+  const [localCollectorResult, setLocalCollectorResult] = useState<LocalCollectorProduct | null>(null);
   const [selectedCatalogItem, setSelectedCatalogItem] = useState<CatalogItem | null>(null);
   const [offerMessage, setOfferMessage] = useState("");
   const [offerDestination, setOfferDestination] = useState("");
@@ -532,6 +580,13 @@ export default function Dashboard() {
   useEffect(() => {
     const savedTheme = window.localStorage.getItem("promozap.theme");
     if (savedTheme === "light" || savedTheme === "dark") setTheme(savedTheme);
+  }, []);
+
+  useEffect(() => {
+    const savedUrl = window.localStorage.getItem("promozap.localCollectorUrl");
+    const savedToken = window.localStorage.getItem("promozap.localCollectorToken");
+    if (savedUrl) setLocalCollectorUrl(savedUrl);
+    if (savedToken) setLocalCollectorToken(savedToken);
   }, []);
 
   useEffect(() => {
@@ -933,6 +988,94 @@ export default function Dashboard() {
       setCatalogError(caught instanceof Error ? caught.message : "Não foi possível consultar os produtos.");
     } finally {
       setCatalogSearching(false);
+    }
+  }
+
+  async function checkLocalCollector(showToast = false) {
+    try {
+      const response = await fetch(`${localCollectorUrl.replace(/\/$/, "")}/health`, { cache: "no-store" });
+      const result = await response.json() as { ok?: boolean };
+      const connected = response.ok && Boolean(result.ok);
+      setLocalCollectorConnected(connected);
+      if (showToast) connected ? toast.success("Coletor local conectado.") : toast.error("O coletor local não respondeu.");
+      return connected;
+    } catch {
+      setLocalCollectorConnected(false);
+      if (showToast) toast.error("Abra o arquivo iniciar-coletor.cmd no seu computador e tente novamente.");
+      return false;
+    }
+  }
+
+  function localProductToCatalog(product: LocalCollectorProduct): CatalogItem {
+    const raw = product as unknown as Record<string, unknown>;
+    const attributes = (product.attributes || []).map((attribute) => ({ ...attribute }));
+    if (product.standardPrice != null) attributes.unshift({ name: "Preço normal", value_name: formatMoney(product.standardPrice, product.currency || "BRL") });
+    if (product.pixPrice != null) attributes.unshift({ name: "Preço no Pix", value_name: formatMoney(product.pixPrice, product.currency || "BRL") });
+    if (product.coupon?.price != null) attributes.unshift({ name: "Preço com cupom", value_name: formatMoney(product.coupon.price, product.currency || "BRL") });
+    return {
+      id: product.itemId || product.userProductId || crypto.randomUUID(),
+      itemId: product.itemId,
+      catalogProductId: product.userProductId,
+      title: product.title || "Produto do Mercado Livre",
+      imageUrl: product.imageUrl,
+      url: product.canonicalUrl || product.url,
+      price: product.pixPrice ?? product.price ?? product.standardPrice,
+      originalPrice: product.originalPrice,
+      currency: product.currency || "BRL",
+      brand: product.brand,
+      condition: product.condition,
+      availability: product.availability,
+      availableQuantity: product.availableQuantity,
+      soldQuantity: null,
+      freeShipping: product.freeShipping,
+      seller: product.seller,
+      officialStore: product.officialStore,
+      discountPercentage: product.discountPercentage || 0,
+      installments: product.installments,
+      attributes,
+      pictures: (product.images || []).map((url) => ({ url })),
+      promotionType: product.coupon ? "Cupom disponível" : product.discountPercentage ? "Desconto na página" : null,
+      priceSource: "marketplace_page",
+      priceUpdatedAt: product.capturedAt,
+      coupon: product.coupon || null,
+      source: "web_search",
+      raw,
+    };
+  }
+
+  async function collectProductFromBrowser() {
+    if (!localCollectorInput.trim()) return toast.error("Cole a URL do produto ou um código MLB.");
+    if (!localCollectorToken.trim()) return toast.error("Cole o token exibido pela janela do coletor local.");
+    setLocalCollectorLoading(true);
+    setLocalCollectorError("");
+    setLocalCollectorResult(null);
+    localStorage.setItem("promozap.localCollectorUrl", localCollectorUrl);
+    localStorage.setItem("promozap.localCollectorToken", localCollectorToken);
+    try {
+      const response = await fetch(`${localCollectorUrl.replace(/\/$/, "")}/scrape`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Promozap-Local-Token": localCollectorToken.trim() },
+        body: JSON.stringify({ input: localCollectorInput.trim() }),
+      });
+      const result = await response.json() as { ok?: boolean; product?: LocalCollectorProduct; error?: string };
+      if (!response.ok || !result.product?.ok) throw new Error(result.product?.userActionMessage || result.error || "Não foi possível extrair esse produto.");
+      setLocalCollectorConnected(true);
+      setLocalCollectorResult(result.product);
+      const item = localProductToCatalog(result.product);
+      setCatalogSearchStore("mercadolivre");
+      setCatalogItems([item]);
+      setCatalogTotal(1);
+      setCatalogWarning("");
+      setSelectedCatalogItem(item);
+      setOfferIncludeImage(Boolean(item.imageUrl));
+      setOfferMessage(composeOfferMessage(item));
+      toast.success("Produto lido diretamente da página do Mercado Livre.");
+    } catch (caught) {
+      setLocalCollectorConnected(false);
+      const message = caught instanceof Error ? caught.message : "Não foi possível falar com o coletor local.";
+      setLocalCollectorError(`${message} Se o navegador pedir acesso à rede local, clique em Permitir.`);
+    } finally {
+      setLocalCollectorLoading(false);
     }
   }
 
@@ -1514,6 +1657,27 @@ export default function Dashboard() {
             </TabsContent>
 
             <TabsContent value="discovery" id="consultar-produtos">
+              <Card className="mb-5 overflow-hidden border-[#31543b] bg-[#0b100d] shadow-none">
+                <CardHeader className="border-b border-[#27322b] bg-[linear-gradient(110deg,rgba(36,199,90,.12),transparent_62%)]">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="flex items-start gap-3"><div className="grid size-11 shrink-0 place-items-center rounded-xl bg-[#24c75a] text-[#04140a]"><Smartphone className="size-5" /></div><div><CardTitle className="text-xl">Coletor pelo navegador</CardTitle><CardDescription className="mt-1 max-w-2xl">Abre o Chrome no seu computador e lê exatamente o preço, cupom, estoque e oferta que aparecem na página do produto.</CardDescription></div></div>
+                    <Badge className={localCollectorConnected ? "w-fit border border-[#2d8a4b] bg-[#153520] text-[#8af3a5]" : "w-fit border border-[#5b4930] bg-[#241d0c] text-[#e6c47d]"}>{localCollectorConnected ? "Coletor conectado" : "Coletor local parado"}</Badge>
+                  </div>
+                </CardHeader>
+                <CardContent className="space-y-4 pt-5">
+                  <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_230px]">
+                    <label className="space-y-2 text-sm font-semibold">URL completa ou código MLB<Input value={localCollectorInput} onChange={(event) => setLocalCollectorInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void collectProductFromBrowser(); }} placeholder="https://www.mercadolivre.com.br/... ou MLB123456789" className="h-12 border-[#34423a] bg-[#080c09]" /></label>
+                    <label className="space-y-2 text-sm font-semibold">Token do coletor<Input type="password" value={localCollectorToken} onChange={(event) => setLocalCollectorToken(event.target.value)} placeholder="Exibido na janela preta" className="h-12 border-[#34423a] bg-[#080c09]" /></label>
+                  </div>
+                  <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+                    <Button onClick={() => void collectProductFromBrowser()} disabled={localCollectorLoading} className="h-12 rounded-xl bg-[#24c75a] font-extrabold text-[#04140a] hover:bg-[#46df75]">{localCollectorLoading ? <LoaderCircle className="animate-spin" /> : <Search />} {localCollectorLoading ? "Lendo a página aberta..." : "Abrir Chrome e extrair dados"}</Button>
+                    <Button variant="outline" onClick={() => void checkLocalCollector(true)} className="h-12 border-[#34423a] bg-[#111813] text-white hover:bg-[#19231c]"><RefreshCw /> Testar conexão</Button>
+                  </div>
+                  <details className="rounded-xl border border-[#27322b] bg-[#080c09] px-4 py-3 text-sm"><summary className="cursor-pointer font-semibold">Como iniciar no computador</summary><ol className="mt-3 list-decimal space-y-2 pl-5 leading-6 text-[#94a69b]"><li>Abra a pasta <code>local-collector</code> do projeto e dê dois cliques em <code>iniciar-coletor.cmd</code>.</li><li>Copie o token mostrado na janela preta e cole acima.</li><li>Na primeira vez, faça login no Mercado Livre na janela do Chrome criada pelo coletor.</li></ol><p className="mt-3 text-xs leading-5 text-[#718079]">A sessão fica apenas no seu computador. Se aparecer CAPTCHA ou confirmação de identidade, resolva manualmente no Chrome e clique novamente.</p></details>
+                  {localCollectorError && <div className="rounded-xl border border-[#784235] bg-[#21110e] p-3 text-sm leading-6 text-[#ffb0a7]">{localCollectorError}</div>}
+                  {localCollectorResult && <div className="rounded-xl border border-[#31543b] bg-[#0b1710] p-4"><div className="flex flex-wrap items-center justify-between gap-2"><p className="font-bold text-[#8af3a5]">Última leitura concluída</p><p className="text-xs text-[#718079]">{localCollectorResult.capturedAt ? new Date(localCollectorResult.capturedAt).toLocaleString("pt-BR") : "agora"}</p></div><div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">{[["Preço no Pix", localCollectorResult.pixPrice != null ? formatMoney(localCollectorResult.pixPrice, localCollectorResult.currency || "BRL") : "—"], ["Preço normal", localCollectorResult.standardPrice != null ? formatMoney(localCollectorResult.standardPrice, localCollectorResult.currency || "BRL") : "—"], ["Preço anterior", localCollectorResult.originalPrice != null ? formatMoney(localCollectorResult.originalPrice, localCollectorResult.currency || "BRL") : "—"], ["Com cupom", localCollectorResult.coupon?.price != null ? formatMoney(localCollectorResult.coupon.price, localCollectorResult.currency || "BRL") : "—"]].map(([label, value]) => <div key={label} className="rounded-lg bg-[#111813] p-3"><p className="text-xs text-[#718079]">{label}</p><p className="mt-1 font-bold text-white">{value}</p></div>)}</div><p className="mt-3 text-xs leading-5 text-[#94a69b]">O produto completo foi aberto no modal abaixo, com imagem, IDs, vendedor, estoque, cupom, parcelas e ficha técnica.</p></div>}
+                </CardContent>
+              </Card>
               <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
                 <div className="space-y-5">
                   <Card className="border-[#27322b] bg-[#0b100d] shadow-none">
