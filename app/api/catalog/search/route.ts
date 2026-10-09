@@ -31,6 +31,7 @@ async function searchMercadoLivre(params: URLSearchParams) {
     sorts: [{ id: "best_sellers", name: "Mais vendidos e ofertas ativas" }],
     source: result.mode,
     category: result.category,
+    warning: result.marketplaceWarning,
   };
 }
 

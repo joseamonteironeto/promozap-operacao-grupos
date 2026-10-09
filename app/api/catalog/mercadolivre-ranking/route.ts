@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { searchMercadoLivreOffers } from "@/lib/mercadolivre-api";
+import { scrapeMercadoLivreListing } from "@/lib/mercadolivre-marketplace";
 
 type MlRow = Record<string, any>;
 
@@ -209,12 +210,15 @@ export async function POST(request: Request) {
     const maxPages = Math.max(1, Math.min(20, Math.floor(Number(body.maxPages) || 5)));
     const query = deriveQuery(sourceUrl);
     const explicitCategory = categoryFromUrl(sourceUrl);
-    const limit = Math.min(50, Math.max(10, maxPages * 10));
-    const search = await searchMercadoLivreOffers(explicitCategory || query, limit);
+    const limit = Math.min(250, Math.max(48, maxPages * 48));
+    const marketplace = await scrapeMercadoLivreListing(sourceUrl.href, maxPages, limit);
+    const search = marketplace.items.length
+      ? { items: marketplace.items, total: marketplace.items.length, category: null, mode: "marketplace" as const }
+      : await searchMercadoLivreOffers(explicitCategory || query, Math.min(50, limit));
     const discovery = {
-      categoryId: explicitCategory || search.category?.id || null,
-      categoryName: search.category?.name || null,
-      domainId: search.domainId || null,
+      categoryId: explicitCategory || search.category?.categoryId || null,
+      categoryName: search.category?.categoryName || null,
+      domainId: search.category?.domainId || null,
     };
     const rows = search.items.map((offer) => ({
       id: offer.itemId || offer.id,
@@ -251,14 +255,16 @@ export async function POST(request: Request) {
       category: discovery,
       total,
       scanned: products.length,
-      pagesScanned: 1,
+      pagesScanned: marketplace.pagesScanned,
       pageLimit: maxPages,
-      truncated: true,
+      truncated: products.length >= limit,
       medianPrice,
       averageDiscount,
       products,
       scoring: "Heurística Promozap: vendas/mais vendidos, desconto, preço versus mediana, frete, Full, reputação, parcelamento e loja oficial.",
-      warning: `Ranking criado com ${products.length.toLocaleString("pt-BR")} ofertas ativas, combinando catálogo, oferta vencedora e mais vendidos oficiais. A URL de listagem é interpretada como categoria/termo porque a busca global antiga foi desativada pelo Mercado Livre.`,
+      warning: marketplace.items.length
+        ? `Ranking criado a partir de ${marketplace.pagesScanned} página(s) e ${products.length.toLocaleString("pt-BR")} ofertas visíveis na URL informada. Preços e cupons refletem o que o Mercado Livre mostrou no momento da consulta.`
+        : marketplace.warning || "A página não devolveu cartões de produto; o painel usou o catálogo oficial como alternativa.",
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Não foi possível analisar a listagem.";

@@ -186,7 +186,13 @@ type CatalogItem = {
   tags?: string[];
   bestSellerPosition?: number | null;
   promotionType?: string | null;
-  source?: "item" | "buy_box" | "best_seller" | "catalog";
+  promotionId?: string | null;
+  priceId?: string | null;
+  priceSource?: "sale_price" | "prices" | "buy_box" | "item" | "catalog" | "marketplace_page";
+  priceUpdatedAt?: string | null;
+  promotions?: Array<Record<string, unknown>>;
+  coupon?: Record<string, unknown> | null;
+  source?: "item" | "buy_box" | "best_seller" | "catalog" | "web_search";
   raw?: Record<string, unknown>;
 };
 
@@ -199,6 +205,7 @@ type CatalogSearchResponse = {
   sorts?: Array<string | { id: string; name: string }>;
   error?: string;
   credentialsRequired?: boolean;
+  warning?: string | null;
 };
 
 type RankedProduct = {
@@ -435,6 +442,7 @@ export default function Dashboard() {
   const [catalogTotal, setCatalogTotal] = useState(0);
   const [catalogSearching, setCatalogSearching] = useState(false);
   const [catalogError, setCatalogError] = useState("");
+  const [catalogWarning, setCatalogWarning] = useState("");
   const [selectedCatalogItem, setSelectedCatalogItem] = useState<CatalogItem | null>(null);
   const [offerMessage, setOfferMessage] = useState("");
   const [offerDestination, setOfferDestination] = useState("");
@@ -891,6 +899,7 @@ export default function Dashboard() {
     if (catalogSearchStore === "amazon" && !catalogQuery.trim()) return toast.error("Informe o que deseja buscar na Amazon.");
     setCatalogSearching(true);
     setCatalogError("");
+      setCatalogWarning("");
     try {
       const params = new URLSearchParams({ store: catalogSearchStore });
       if (catalogQuery.trim()) params.set("q", catalogQuery.trim());
@@ -904,10 +913,12 @@ export default function Dashboard() {
       setCatalogFilters(result.filters || null);
       setCatalogSorts(result.sorts || []);
       setCatalogTotal(result.total || 0);
+      setCatalogWarning(result.warning || "");
       if (!catalogQuery.trim() && result.query) setCatalogQuery(result.query);
     } catch (caught) {
       setCatalogItems([]);
       setCatalogFilters(null);
+      setCatalogWarning("");
       setCatalogError(caught instanceof Error ? caught.message : "Não foi possível consultar os produtos.");
     } finally {
       setCatalogSearching(false);
@@ -1490,6 +1501,7 @@ export default function Dashboard() {
                       <div className="grid gap-3 sm:grid-cols-2"><label className="space-y-2 text-sm font-semibold">Preço mínimo<Input type="number" min="0" value={catalogMinPrice} onChange={(event) => setCatalogMinPrice(event.target.value)} placeholder="R$ 0" className="h-11 border-[#34423a] bg-[#080c09]" /></label><label className="space-y-2 text-sm font-semibold">Preço máximo<Input type="number" min="0" value={catalogMaxPrice} onChange={(event) => setCatalogMaxPrice(event.target.value)} placeholder="Sem limite" className="h-11 border-[#34423a] bg-[#080c09]" /></label></div>
                       <Button onClick={() => void searchCatalog()} disabled={catalogSearching} className="h-12 w-full rounded-xl bg-[#24c75a] font-bold text-[#04140a] hover:bg-[#46df75]">{catalogSearching ? <LoaderCircle className="animate-spin" /> : <Search />} {catalogSearching ? "Cruzando dados oficiais..." : catalogQuery.trim() ? "Buscar ofertas" : "Ver recomendações"}</Button>
                       {catalogError && <div className="rounded-xl border border-[#784235] bg-[#21110e] p-3 text-sm leading-6 text-[#ffb0a7]">{catalogError}</div>}
+                      {catalogWarning && <div className="flex items-start gap-3 rounded-xl border border-[#66532e] bg-[#241d0c] p-3 text-sm leading-6 text-[#e6c47d]"><CircleAlert className="mt-1 size-4 shrink-0" /><span>{catalogWarning} Abra Afiliados → Mercado Livre, cole uma exportação recente dos cookies e salve; a próxima busca tentará novamente automaticamente.</span></div>}
                     </CardContent>
                   </Card>
 
@@ -1522,7 +1534,8 @@ export default function Dashboard() {
                     <DialogHeader><div className="mb-2 flex flex-wrap gap-2"><Badge className="bg-[#ffe600] text-[#231f00]">{selectedCatalogItem.source === "item" ? "Anúncio oficial" : selectedCatalogItem.source === "best_seller" ? "Mais vendido" : selectedCatalogItem.source === "buy_box" ? "Oferta vencedora" : "Produto"}</Badge>{selectedCatalogItem.discountPercentage ? <Badge className="bg-[#24c75a] text-[#04140a]">{selectedCatalogItem.discountPercentage}% OFF</Badge> : null}{selectedCatalogItem.full && <Badge className="bg-[#14233a] text-[#9bc4ff]">Full</Badge>}</div><DialogTitle className="pr-7 text-xl leading-7">{selectedCatalogItem.title}</DialogTitle><DialogDescription>Revise os dados e personalize exatamente como a oferta será enviada.</DialogDescription></DialogHeader>
                     <div className="grid gap-6 lg:grid-cols-[minmax(0,1.15fr)_minmax(320px,.85fr)]">
                       <div className="space-y-4">
-                        <div className="grid gap-4 sm:grid-cols-[220px_minmax(0,1fr)]"><div className="aspect-square overflow-hidden rounded-xl bg-white p-3">{selectedCatalogItem.imageUrl ? <img src={selectedCatalogItem.imageUrl} alt={selectedCatalogItem.title} className="h-full w-full object-contain" /> : <div className="grid h-full place-items-center"><ShoppingBag className="size-10 text-[#607267]" /></div>}</div><div className="space-y-3"><div><p className="text-3xl font-black text-[#62ef8b]">{formatMoney(selectedCatalogItem.price, selectedCatalogItem.currency || "BRL")}</p>{selectedCatalogItem.originalPrice && <p className="text-sm text-[#718079] line-through">{formatMoney(selectedCatalogItem.originalPrice, selectedCatalogItem.currency || "BRL")}</p>}</div><div className="grid grid-cols-2 gap-2 text-sm">{[["Item", selectedCatalogItem.itemId], ["Catálogo", selectedCatalogItem.catalogProductId], ["Categoria", selectedCatalogItem.categoryName || selectedCatalogItem.categoryId], ["Vendedor", selectedCatalogItem.seller], ["Reputação", selectedCatalogItem.sellerReputation], ["Estoque", selectedCatalogItem.availableQuantity], ["Vendidos", selectedCatalogItem.soldQuantity], ["Garantia", selectedCatalogItem.warranty]].map(([label, value]) => <div key={String(label)} className="rounded-lg bg-[#111813] p-3"><p className="text-xs text-[#718079]">{label}</p><p className="mt-1 break-words font-semibold">{value == null ? "—" : String(value)}</p></div>)}</div></div></div>
+                        <div className="grid gap-4 sm:grid-cols-[220px_minmax(0,1fr)]"><div className="aspect-square overflow-hidden rounded-xl bg-white p-3">{selectedCatalogItem.imageUrl ? <img src={selectedCatalogItem.imageUrl} alt={selectedCatalogItem.title} className="h-full w-full object-contain" /> : <div className="grid h-full place-items-center"><ShoppingBag className="size-10 text-[#607267]" /></div>}</div><div className="space-y-3"><div className="rounded-xl border border-[#244b31] bg-[#0d1b12] p-4"><p className="text-xs font-semibold text-[#8fa096]">Preço vigente no marketplace</p><p className="mt-1 text-3xl font-black text-[#62ef8b]">{selectedCatalogItem.price == null ? "Sem oferta ativa" : formatMoney(selectedCatalogItem.price, selectedCatalogItem.currency || "BRL")}</p>{selectedCatalogItem.originalPrice && selectedCatalogItem.originalPrice > (selectedCatalogItem.price || 0) ? <div className="mt-2 flex flex-wrap items-center gap-2"><p className="text-sm text-[#8a9a90] line-through">{formatMoney(selectedCatalogItem.originalPrice, selectedCatalogItem.currency || "BRL")}</p><Badge className="bg-[#24c75a] text-[#04140a]">Economia de {formatMoney(selectedCatalogItem.originalPrice - (selectedCatalogItem.price || 0), selectedCatalogItem.currency || "BRL")}</Badge></div> : null}<p className="mt-2 text-[11px] text-[#718079]">Fonte: {selectedCatalogItem.priceSource === "sale_price" ? "preço de venda oficial" : selectedCatalogItem.priceSource === "prices" ? "lista oficial de preços" : selectedCatalogItem.priceSource === "buy_box" ? "oferta vencedora" : "catálogo"}{selectedCatalogItem.priceUpdatedAt ? ` · ${new Date(selectedCatalogItem.priceUpdatedAt).toLocaleString("pt-BR")}` : ""}</p></div><div className="grid grid-cols-2 gap-2 text-sm">{[["Item", selectedCatalogItem.itemId], ["Catálogo", selectedCatalogItem.catalogProductId], ["Categoria", selectedCatalogItem.categoryName || selectedCatalogItem.categoryId], ["Vendedor", selectedCatalogItem.seller], ["Reputação", selectedCatalogItem.sellerReputation], ["Estoque", selectedCatalogItem.availableQuantity], ["Vendidos", selectedCatalogItem.soldQuantity], ["Garantia", selectedCatalogItem.warranty]].map(([label, value]) => <div key={String(label)} className="rounded-lg bg-[#111813] p-3"><p className="text-xs text-[#718079]">{label}</p><p className="mt-1 break-words font-semibold">{value == null ? "—" : String(value)}</p></div>)}</div></div></div>
+                        <div className="grid gap-3 sm:grid-cols-2"><div className="rounded-xl border border-[#27322b] bg-[#0d1310] p-4"><p className="text-xs text-[#718079]">Promoção detectada</p><p className="mt-1 font-semibold">{selectedCatalogItem.promotionType || "Nenhuma promoção informada"}</p>{selectedCatalogItem.promotionId && <p className="mt-1 break-all text-xs text-[#94a69b]">{selectedCatalogItem.promotionId}</p>}</div><div className="rounded-xl border border-[#27322b] bg-[#0d1310] p-4"><p className="text-xs text-[#718079]">Cupom</p><p className="mt-1 font-semibold">{selectedCatalogItem.coupon?.code ? String(selectedCatalogItem.coupon.code) : "Não exposto para esta oferta"}</p><p className="mt-1 text-xs leading-5 text-[#718079]">O Mercado Livre restringe detalhes de cupons de vendedores terceiros.</p></div></div>
                         {selectedCatalogItem.attributes?.length ? <div><p className="mb-3 text-sm font-bold text-[#b7c4bc]">Ficha técnica ({selectedCatalogItem.attributes.length})</p><div className="grid gap-2 sm:grid-cols-2">{selectedCatalogItem.attributes.slice(0, 40).map((attribute, index) => <div key={`${String(attribute.id || attribute.name)}-${index}`} className="rounded-lg border border-[#27322b] bg-[#0d1310] px-3 py-2"><p className="text-xs text-[#718079]">{String(attribute.name || attribute.id || "Atributo")}</p><p className="mt-1 text-sm font-medium">{String(attribute.value_name || attribute.valueName || attribute.value_id || "—")}</p></div>)}</div></div> : null}
                         <details className="rounded-xl border border-[#27322b] bg-[#080c09]"><summary className="cursor-pointer px-3 py-3 text-sm font-semibold">Resposta completa da API</summary><div className="border-t border-[#27322b] p-3"><Button variant="outline" size="sm" onClick={() => { void navigator.clipboard.writeText(JSON.stringify(selectedCatalogItem, null, 2)); toast.success("Dados copiados."); }} className="mb-3 border-[#34423a] bg-[#111813] text-white"><Copy /> Copiar JSON</Button><pre className="max-h-72 overflow-auto whitespace-pre-wrap break-all text-xs leading-5 text-[#8fd9a4]">{JSON.stringify(selectedCatalogItem, null, 2)}</pre></div></details>
                       </div>
