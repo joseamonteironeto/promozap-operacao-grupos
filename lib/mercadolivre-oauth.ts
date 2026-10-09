@@ -28,9 +28,21 @@ export async function mercadoLivreOAuthStatus() {
     readIntegrationSecret("mercadolivre_token_expires_at"),
     readIntegrationSecret("mercadolivre_user_id"),
   ]);
+  let connected = false;
+  if (accessToken || refreshToken) {
+    let token = await getMercadoLivreAccessToken();
+    if (token) {
+      let response = await fetch("https://api.mercadolibre.com/users/me", { headers: { Authorization: `Bearer ${token}` }, cache: "no-store", signal: AbortSignal.timeout(10_000) }).catch(() => null);
+      if (response && (response.status === 401 || response.status === 403)) {
+        token = await refreshMercadoLivreAccessToken();
+        response = token ? await fetch("https://api.mercadolibre.com/users/me", { headers: { Authorization: `Bearer ${token}` }, cache: "no-store", signal: AbortSignal.timeout(10_000) }).catch(() => null) : null;
+      }
+      connected = Boolean(response?.ok);
+    }
+  }
   return {
     appConfigured: Boolean(clientId && clientSecret),
-    connected: Boolean(accessToken || refreshToken),
+    connected,
     expiresAt: expiresAt || null,
     userId: userId || null,
   };
