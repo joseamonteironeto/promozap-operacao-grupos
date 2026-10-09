@@ -2,6 +2,7 @@ import { deleteIntegrationSecret, readIntegrationSecret, saveIntegrationSecret }
 
 const TOKEN_ENDPOINT = "https://api.mercadolibre.com/oauth/token";
 const EXPIRY_MARGIN_MS = 2 * 60 * 1000;
+let refreshInFlight: Promise<string | null> | null = null;
 
 type TokenPayload = {
   access_token?: string;
@@ -80,11 +81,31 @@ export async function getMercadoLivreAccessToken() {
   const validUntil = expiresAt ? Date.parse(expiresAt) : 0;
   if (accessToken && (!validUntil || validUntil > Date.now() + EXPIRY_MARGIN_MS)) return accessToken;
   if (!refreshToken || !clientId || !clientSecret) return accessToken || null;
-  try {
-    return await requestToken({ grant_type: "refresh_token", client_id: clientId, client_secret: clientSecret, refresh_token: refreshToken });
-  } catch {
-    return null;
-  }
+  return refreshMercadoLivreAccessToken();
+}
+
+export async function refreshMercadoLivreAccessToken() {
+  if (refreshInFlight) return refreshInFlight;
+  refreshInFlight = (async () => {
+    const [refreshToken, clientId, clientSecret] = await Promise.all([
+      readIntegrationSecret("mercadolivre_refresh_token"),
+      readIntegrationSecret("mercadolivre_client_id"),
+      readIntegrationSecret("mercadolivre_client_secret"),
+    ]);
+    if (!refreshToken || !clientId || !clientSecret) return null;
+    try {
+      return await requestToken({ grant_type: "refresh_token", client_id: clientId, client_secret: clientSecret, refresh_token: refreshToken });
+    } catch {
+      await Promise.all([
+        deleteIntegrationSecret("mercadolivre_access_token"),
+        deleteIntegrationSecret("mercadolivre_refresh_token"),
+        deleteIntegrationSecret("mercadolivre_token_expires_at"),
+      ]);
+      return null;
+    }
+  })();
+  try { return await refreshInFlight; }
+  finally { refreshInFlight = null; }
 }
 
 export async function disconnectMercadoLivreOAuth() {

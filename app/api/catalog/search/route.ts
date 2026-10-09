@@ -1,74 +1,36 @@
 import { env } from "cloudflare:workers";
 import { NextResponse } from "next/server";
 import { searchAmazonProducts } from "@/lib/amazon-creators";
-import { getMercadoLivreAccessToken } from "@/lib/mercadolivre-oauth";
+import { searchMercadoLivreOffers } from "@/lib/mercadolivre-api";
 
 function numberParam(value: string | null) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
-function mlImage(url: unknown) {
-  return typeof url === "string" ? url.replace(/^http:/, "https:").replace(/-I\.jpg$/i, "-O.jpg") : null;
-}
-
 async function searchMercadoLivre(params: URLSearchParams) {
-  const token = await getMercadoLivreAccessToken();
-  const headers: HeadersInit = { Accept: "application/json" };
-  if (token) headers.Authorization = `Bearer ${token}`;
   let query = params.get("q")?.trim() || "";
   if (!query) {
-    const trendsResponse = await fetch("https://api.mercadolibre.com/trends/MLB?limit=20", { headers, signal: AbortSignal.timeout(10_000) });
+    const trendsResponse = await fetch("https://api.mercadolibre.com/trends/MLB?limit=20", { signal: AbortSignal.timeout(10_000) });
     if (trendsResponse.ok) {
       const trends = await trendsResponse.json() as Array<{ keyword?: string }>;
       query = trends.find((item) => item.keyword)?.keyword || "ofertas";
     } else query = "ofertas";
   }
-  const target = new URL("https://api.mercadolibre.com/sites/MLB/search");
-  target.searchParams.set("q", query);
-  target.searchParams.set("limit", "24");
-  for (const name of ["sort", "category", "shipping_cost", "condition", "official_store", "price"]) {
-    const value = params.get(name);
-    if (value) target.searchParams.set(name, value);
-  }
   const minPrice = numberParam(params.get("minPrice"));
   const maxPrice = numberParam(params.get("maxPrice"));
-  if (minPrice || maxPrice) target.searchParams.set("price", `${minPrice || "*"}-${maxPrice || "*"}`);
-  const response = await fetch(target, { headers, signal: AbortSignal.timeout(15_000) });
-  const data = await response.json().catch(() => ({})) as Record<string, any>;
-  if (!response.ok) {
-    if (!token && (response.status === 401 || response.status === 403)) {
-      throw new Error("Conecte o aplicativo do Mercado Livre nesta aba para liberar a consulta oficial.");
-    }
-    throw new Error(data.message || `O Mercado Livre recusou a consulta (HTTP ${response.status}).`);
-  }
-  const items = (data.results || []).map((item: Record<string, any>) => ({
-    id: item.id,
-    title: item.title,
-    imageUrl: mlImage(item.thumbnail),
-    url: item.permalink,
-    price: item.price ?? null,
-    originalPrice: item.original_price ?? null,
-    currency: item.currency_id || "BRL",
-    condition: item.condition || null,
-    availableQuantity: item.available_quantity ?? null,
-    soldQuantity: item.sold_quantity ?? null,
-    freeShipping: Boolean(item.shipping?.free_shipping),
-    seller: item.seller?.nickname || item.seller?.id || null,
-    categoryId: item.category_id || null,
-    officialStore: item.official_store_name || null,
-    installments: item.installments || null,
-    attributes: item.attributes || [],
-    raw: item,
-  }));
+  const result = await searchMercadoLivreOffers(query, 20);
+  const items = result.items.filter((item) => (!minPrice || (item.price != null && item.price >= minPrice)) && (!maxPrice || (item.price != null && item.price <= maxPrice)));
   return {
     store: "mercadolivre",
     query,
     items,
-    total: data.paging?.total || items.length,
-    filters: data.available_filters || [],
-    appliedFilters: data.filters || [],
-    sorts: data.available_sorts || [],
+    total: result.total,
+    filters: result.category ? [{ id: "category", name: "Categoria detectada", values: [{ id: result.category.categoryId, name: result.category.categoryName || result.category.domainName }] }] : [],
+    appliedFilters: [],
+    sorts: [{ id: "best_sellers", name: "Mais vendidos e ofertas ativas" }],
+    source: result.mode,
+    category: result.category,
   };
 }
 

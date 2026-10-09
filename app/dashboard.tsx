@@ -155,6 +155,8 @@ type AutomationLog = {
 
 type CatalogItem = {
   id: string;
+  itemId?: string | null;
+  catalogProductId?: string | null;
   title: string;
   imageUrl?: string | null;
   url?: string | null;
@@ -170,6 +172,22 @@ type CatalogItem = {
   seller?: string | number | null;
   categoryId?: string | null;
   officialStore?: string | null;
+  discountPercentage?: number;
+  full?: boolean;
+  logisticType?: string | null;
+  sellerId?: string | number | null;
+  sellerReputation?: string | null;
+  categoryName?: string | null;
+  installments?: Record<string, unknown> | null;
+  warranty?: string | null;
+  attributes?: Array<Record<string, unknown>>;
+  pictures?: Array<Record<string, unknown>>;
+  saleTerms?: Array<Record<string, unknown>>;
+  tags?: string[];
+  bestSellerPosition?: number | null;
+  promotionType?: string | null;
+  source?: "item" | "buy_box" | "best_seller" | "catalog";
+  raw?: Record<string, unknown>;
 };
 
 type CatalogSearchResponse = {
@@ -417,6 +435,12 @@ export default function Dashboard() {
   const [catalogTotal, setCatalogTotal] = useState(0);
   const [catalogSearching, setCatalogSearching] = useState(false);
   const [catalogError, setCatalogError] = useState("");
+  const [selectedCatalogItem, setSelectedCatalogItem] = useState<CatalogItem | null>(null);
+  const [offerMessage, setOfferMessage] = useState("");
+  const [offerDestination, setOfferDestination] = useState("");
+  const [offerIncludeImage, setOfferIncludeImage] = useState(true);
+  const [offerPreparing, setOfferPreparing] = useState(false);
+  const [offerSending, setOfferSending] = useState(false);
   const [catalogCredentials, setCatalogCredentials] = useState({ amazonConfigured: false, mercadoLivreConfigured: false, mercadoLivreAppConfigured: false, mercadoLivreExpiresAt: null as string | null, mercadoLivreUserId: null as string | null });
   const [amazonClientId, setAmazonClientId] = useState("");
   const [amazonClientSecret, setAmazonClientSecret] = useState("");
@@ -890,6 +914,63 @@ export default function Dashboard() {
     }
   }
 
+  function composeOfferMessage(item: CatalogItem, link = item.url || "") {
+    const currentPrice = item.price != null ? formatMoney(item.price, item.currency || "BRL") : "Consulte o preço no link";
+    const original = item.originalPrice && item.price && item.originalPrice > item.price ? `De: ~${formatMoney(item.originalPrice, item.currency || "BRL")}~\n` : "";
+    const discount = item.discountPercentage ? ` (${item.discountPercentage}% OFF)` : "";
+    const shipping = [item.freeShipping ? "Frete grátis" : "", item.full ? "Envio Full" : ""].filter(Boolean).join(" · ");
+    return `🔥 *${item.title}*\n\n${original}✅ *Por: ${currentPrice}${discount}*${shipping ? `\n🚚 ${shipping}` : ""}\n\n🛒 Garanta aqui: ${link}`.trim();
+  }
+
+  async function prepareCatalogOffer(item: CatalogItem) {
+    setSelectedCatalogItem(item);
+    setOfferDestination((current) => current || destinationGroups[0]?.JID || "");
+    setOfferIncludeImage(Boolean(item.imageUrl));
+    setOfferMessage(composeOfferMessage(item));
+    if (!item.url) return;
+    setOfferPreparing(true);
+    try {
+      const response = await fetch("/api/products", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ input: item.url, destinationGroup: offerDestination || destinationGroups[0]?.JID || "" }),
+      });
+      const result = await response.json() as { products?: ProductRecord[]; error?: string };
+      const prepared = result.products?.[0];
+      const link = prepared?.affiliateUrl || item.url;
+      setOfferMessage(composeOfferMessage(item, link));
+      if (!prepared?.affiliateUrl && catalogSearchStore === "mercadolivre") toast.warning("O produto foi preparado, mas o gerador de afiliado não devolveu um novo link. Revise a sessão do Mercado Livre.");
+    } catch {
+      setOfferMessage(composeOfferMessage(item));
+    } finally {
+      setOfferPreparing(false);
+    }
+  }
+
+  async function sendPreparedOffer() {
+    if (!selectedCatalogItem) return;
+    if (!offerDestination) return toast.error("Escolha o grupo de destino.");
+    if (!offerMessage.trim()) return toast.error("Escreva a mensagem da oferta.");
+    if (!whatsapp.instanceToken.trim()) return toast.error("Informe o token da UAZAPI em WhatsApp / UAZAPI.");
+    setOfferSending(true);
+    try {
+      const response = await fetch("/api/offers/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Promozap-Admin-Token": whatsapp.instanceToken.trim() },
+        body: JSON.stringify({ destinationJid: offerDestination, text: offerMessage, imageUrl: selectedCatalogItem.imageUrl, includeImage: offerIncludeImage, productId: selectedCatalogItem.itemId || selectedCatalogItem.id }),
+      });
+      const result = await response.json() as { error?: string; destination?: string };
+      if (!response.ok) throw new Error(result.error || "Não foi possível enviar a oferta.");
+      toast.success(`Oferta enviada para ${result.destination || "o grupo"}.`);
+      setSelectedCatalogItem(null);
+      await loadLogs();
+    } catch (caught) {
+      toast.error(caught instanceof Error ? caught.message : "Não foi possível enviar a oferta.");
+    } finally {
+      setOfferSending(false);
+    }
+  }
+
   async function analyzeMercadoLivreListing() {
     if (!rankingUrl.trim()) return toast.error("Cole a URL da listagem do Mercado Livre.");
     setRankingLoading(true);
@@ -1049,7 +1130,7 @@ export default function Dashboard() {
     products: ["Produtos encontrados", "Acompanhe cada link identificado, convertido e enviado."],
     catalog: ["Dados dos produtos", "Veja tudo o que foi extraído das ofertas enviadas da Amazon e do Mercado Livre."],
     discovery: ["Consultar produtos", "Pesquise recomendações, preços e filtros nos catálogos oficiais."],
-    ranking: ["Ranking Mercado Livre", "Analise uma listagem completa e encontre automaticamente as ofertas mais atrativas."],
+    ranking: ["Ranking Mercado Livre", "Analise produtos do catálogo oficial e compare automaticamente as ofertas vencedoras."],
     affiliates: ["Afiliados", "Defina como os links encontrados serão convertidos."],
     amazon: ["Gerador Amazon", "Cole links longos ou encurtados e gere versões limpas com seu Tracking ID."],
     mercadolivre: ["Gerador Mercado Livre", "Gere links com sua tag e sua sessão de afiliado."],
@@ -1399,23 +1480,23 @@ export default function Dashboard() {
               <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
                 <div className="space-y-5">
                   <Card className="border-[#27322b] bg-[#0b100d] shadow-none">
-                    <CardHeader className="border-b border-[#27322b]"><CardTitle className="text-xl">Pesquisa de catálogo</CardTitle><CardDescription>Consulte produtos e veja os filtros devolvidos pelas APIs das lojas.</CardDescription></CardHeader>
+                    <CardHeader className="border-b border-[#27322b]"><CardTitle className="text-xl">Central de ofertas</CardTitle><CardDescription>Busque por nome, cole um link ou informe um MLB ID. O painel cruza anúncio, preço atual, oferta vencedora, vendedor e ficha técnica.</CardDescription></CardHeader>
                     <CardContent className="space-y-4 pt-5">
                       <div className="grid gap-3 sm:grid-cols-2">
                         <label className="space-y-2 text-sm font-semibold">Loja<NativeSelect value={catalogSearchStore} onChange={(event) => { setCatalogSearchStore(event.target.value as "amazon" | "mercadolivre"); setCatalogItems([]); setCatalogFilters(null); setCatalogSort(""); setCatalogError(""); }}><NativeSelectOption value="mercadolivre">Mercado Livre</NativeSelectOption><NativeSelectOption value="amazon">Amazon</NativeSelectOption></NativeSelect></label>
                         <label className="space-y-2 text-sm font-semibold">Ordenar<NativeSelect value={catalogSort} onChange={(event) => setCatalogSort(event.target.value)}><NativeSelectOption value="">Relevância</NativeSelectOption>{catalogSorts.map((sort) => { const value = typeof sort === "string" ? sort : sort.id; const label = typeof sort === "string" ? sort : sort.name; return <NativeSelectOption key={value} value={value}>{label}</NativeSelectOption>; })}</NativeSelect></label>
                       </div>
-                      <label className="block space-y-2 text-sm font-semibold">Produto ou palavra-chave<div className="relative"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[#718079]" /><Input value={catalogQuery} onChange={(event) => setCatalogQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void searchCatalog(); }} placeholder={catalogSearchStore === "amazon" ? "Ex.: smartphone, cafeteira, notebook" : "Deixe vazio para buscar uma tendência"} className="h-12 border-[#34423a] bg-[#080c09] pl-10" /></div></label>
+                      <label className="block space-y-2 text-sm font-semibold">Produto, link ou ID<div className="relative"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[#718079]" /><Input value={catalogQuery} onChange={(event) => setCatalogQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void searchCatalog(); }} placeholder={catalogSearchStore === "amazon" ? "Ex.: cafeteira ou link da Amazon" : "Ex.: notebook, link do produto ou MLB123456789"} className="h-12 border-[#34423a] bg-[#080c09] pl-10" /></div></label>
                       <div className="grid gap-3 sm:grid-cols-2"><label className="space-y-2 text-sm font-semibold">Preço mínimo<Input type="number" min="0" value={catalogMinPrice} onChange={(event) => setCatalogMinPrice(event.target.value)} placeholder="R$ 0" className="h-11 border-[#34423a] bg-[#080c09]" /></label><label className="space-y-2 text-sm font-semibold">Preço máximo<Input type="number" min="0" value={catalogMaxPrice} onChange={(event) => setCatalogMaxPrice(event.target.value)} placeholder="Sem limite" className="h-11 border-[#34423a] bg-[#080c09]" /></label></div>
-                      <Button onClick={() => void searchCatalog()} disabled={catalogSearching} className="h-12 w-full rounded-xl bg-[#24c75a] font-bold text-[#04140a] hover:bg-[#46df75]">{catalogSearching ? <LoaderCircle className="animate-spin" /> : <Search />} {catalogQuery.trim() ? "Consultar produtos" : "Ver recomendações"}</Button>
+                      <Button onClick={() => void searchCatalog()} disabled={catalogSearching} className="h-12 w-full rounded-xl bg-[#24c75a] font-bold text-[#04140a] hover:bg-[#46df75]">{catalogSearching ? <LoaderCircle className="animate-spin" /> : <Search />} {catalogSearching ? "Cruzando dados oficiais..." : catalogQuery.trim() ? "Buscar ofertas" : "Ver recomendações"}</Button>
                       {catalogError && <div className="rounded-xl border border-[#784235] bg-[#21110e] p-3 text-sm leading-6 text-[#ffb0a7]">{catalogError}</div>}
                     </CardContent>
                   </Card>
 
                   {catalogItems.length > 0 && <div className="grid gap-4 sm:grid-cols-2 2xl:grid-cols-3">{catalogItems.map((item) => (
-                    <Card key={item.id} className="overflow-hidden border-[#27322b] bg-[#0b100d] shadow-none">
-                      <div className="aspect-[4/3] bg-white p-3">{item.imageUrl ? <img src={item.imageUrl} alt={item.title} className="h-full w-full object-contain" loading="lazy" /> : <div className="grid h-full place-items-center"><ShoppingBag className="size-8 text-[#607267]" /></div>}</div>
-                      <CardContent className="space-y-3 p-4"><div className="flex flex-wrap gap-2"><Badge className={catalogSearchStore === "amazon" ? "bg-[#ff9900] text-[#231500]" : "bg-[#ffe600] text-[#231f00]"}>{catalogSearchStore === "amazon" ? "Amazon" : "Mercado Livre"}</Badge>{item.freeShipping && <Badge className="border border-[#2d8a4b] bg-[#153520] text-[#8af3a5]">Frete grátis</Badge>}</div><h3 className="line-clamp-3 min-h-[4.5rem] font-bold leading-6">{item.title}</h3><div><p className="text-2xl font-extrabold text-[#62ef8b]">{item.price != null ? new Intl.NumberFormat("pt-BR", { style: "currency", currency: item.currency || "BRL" }).format(item.price) : "Preço não informado"}</p>{item.originalPrice && item.originalPrice > (item.price || 0) ? <p className="text-sm text-[#718079] line-through">{new Intl.NumberFormat("pt-BR", { style: "currency", currency: item.currency || "BRL" }).format(item.originalPrice)}</p> : null}</div><div className="space-y-1 text-xs text-[#94a69b]">{item.brand && <p>Marca: {item.brand}</p>}{item.seller && <p>Vendedor: {item.seller}</p>}{item.soldQuantity != null && <p>Vendidos: {item.soldQuantity}</p>}{item.availability && <p>{item.availability}</p>}</div>{item.url && <Button asChild variant="outline" className="w-full border-[#34423a] bg-[#111813] text-white hover:bg-[#19231c]"><a href={item.url} target="_blank" rel="noreferrer"><ExternalLink /> Abrir produto</a></Button>}</CardContent>
+                    <Card key={item.id} className="group overflow-hidden border-[#27322b] bg-[#0b100d] shadow-none transition hover:border-[#3e5948]">
+                      <div className="relative aspect-[4/3] bg-white p-3">{item.imageUrl ? <img src={item.imageUrl} alt={item.title} className="h-full w-full object-contain" loading="lazy" /> : <div className="grid h-full place-items-center"><ShoppingBag className="size-8 text-[#607267]" /></div>}{item.bestSellerPosition && <div className="absolute left-3 top-3 rounded-full bg-[#ffe600] px-3 py-1 text-xs font-black text-[#231f00]">#{item.bestSellerPosition} mais vendido</div>}</div>
+                      <CardContent className="space-y-3 p-4"><div className="flex flex-wrap gap-2"><Badge className={catalogSearchStore === "amazon" ? "bg-[#ff9900] text-[#231500]" : "bg-[#ffe600] text-[#231f00]"}>{catalogSearchStore === "amazon" ? "Amazon" : item.source === "item" ? "Anúncio" : item.source === "buy_box" ? "Oferta vencedora" : item.source === "best_seller" ? "Mais vendido" : "Catálogo"}</Badge>{item.discountPercentage ? <Badge className="bg-[#24c75a] text-[#04140a]">-{item.discountPercentage}%</Badge> : null}{item.freeShipping && <Badge className="border border-[#2d8a4b] bg-[#153520] text-[#8af3a5]">Frete grátis</Badge>}{item.full && <Badge className="border border-[#365078] bg-[#14233a] text-[#9bc4ff]">Full</Badge>}</div><h3 className="line-clamp-3 min-h-[4.5rem] font-bold leading-6">{item.title}</h3><div><p className="text-2xl font-extrabold text-[#62ef8b]">{item.price != null ? new Intl.NumberFormat("pt-BR", { style: "currency", currency: item.currency || "BRL" }).format(item.price) : "Sem oferta ativa"}</p>{item.originalPrice && item.originalPrice > (item.price || 0) ? <p className="text-sm text-[#718079] line-through">{new Intl.NumberFormat("pt-BR", { style: "currency", currency: item.currency || "BRL" }).format(item.originalPrice)}</p> : null}</div><div className="grid grid-cols-2 gap-2 text-xs text-[#94a69b]"><p>ID: {item.itemId || item.catalogProductId || item.id}</p><p>{item.soldQuantity != null ? `${item.soldQuantity} vendidos` : item.categoryName || "Categoria oficial"}</p>{item.seller && <p className="col-span-2 truncate">Vendedor: {item.seller}</p>}</div><div className="grid grid-cols-2 gap-2"><Button onClick={() => void prepareCatalogOffer(item)} disabled={item.price == null || offerPreparing} className="bg-[#24c75a] font-bold text-[#04140a] hover:bg-[#46df75]"><Send /> Preparar</Button>{item.url ? <Button asChild variant="outline" className="border-[#34423a] bg-[#111813] text-white hover:bg-[#19231c]"><a href={item.url} target="_blank" rel="noreferrer"><ExternalLink /> Abrir</a></Button> : <Button variant="outline" disabled>Abrir</Button>}</div><Button onClick={() => void prepareCatalogOffer(item)} variant="ghost" className="w-full text-[#9fb0a5] hover:bg-[#121b15] hover:text-white"><Database /> Ver todos os dados</Button></CardContent>
                     </Card>
                   ))}</div>}
                 </div>
@@ -1435,21 +1516,36 @@ export default function Dashboard() {
                   </CardContent></Card>
                 </div>
               </div>
+              <Dialog open={Boolean(selectedCatalogItem)} onOpenChange={(open) => { if (!open) setSelectedCatalogItem(null); }}>
+                <DialogContent className="max-h-[94vh] overflow-y-auto border-[#34423a] bg-[#090d0a] text-white sm:max-w-5xl">
+                  {selectedCatalogItem && <>
+                    <DialogHeader><div className="mb-2 flex flex-wrap gap-2"><Badge className="bg-[#ffe600] text-[#231f00]">{selectedCatalogItem.source === "item" ? "Anúncio oficial" : selectedCatalogItem.source === "best_seller" ? "Mais vendido" : selectedCatalogItem.source === "buy_box" ? "Oferta vencedora" : "Produto"}</Badge>{selectedCatalogItem.discountPercentage ? <Badge className="bg-[#24c75a] text-[#04140a]">{selectedCatalogItem.discountPercentage}% OFF</Badge> : null}{selectedCatalogItem.full && <Badge className="bg-[#14233a] text-[#9bc4ff]">Full</Badge>}</div><DialogTitle className="pr-7 text-xl leading-7">{selectedCatalogItem.title}</DialogTitle><DialogDescription>Revise os dados e personalize exatamente como a oferta será enviada.</DialogDescription></DialogHeader>
+                    <div className="grid gap-6 lg:grid-cols-[minmax(0,1.15fr)_minmax(320px,.85fr)]">
+                      <div className="space-y-4">
+                        <div className="grid gap-4 sm:grid-cols-[220px_minmax(0,1fr)]"><div className="aspect-square overflow-hidden rounded-xl bg-white p-3">{selectedCatalogItem.imageUrl ? <img src={selectedCatalogItem.imageUrl} alt={selectedCatalogItem.title} className="h-full w-full object-contain" /> : <div className="grid h-full place-items-center"><ShoppingBag className="size-10 text-[#607267]" /></div>}</div><div className="space-y-3"><div><p className="text-3xl font-black text-[#62ef8b]">{formatMoney(selectedCatalogItem.price, selectedCatalogItem.currency || "BRL")}</p>{selectedCatalogItem.originalPrice && <p className="text-sm text-[#718079] line-through">{formatMoney(selectedCatalogItem.originalPrice, selectedCatalogItem.currency || "BRL")}</p>}</div><div className="grid grid-cols-2 gap-2 text-sm">{[["Item", selectedCatalogItem.itemId], ["Catálogo", selectedCatalogItem.catalogProductId], ["Categoria", selectedCatalogItem.categoryName || selectedCatalogItem.categoryId], ["Vendedor", selectedCatalogItem.seller], ["Reputação", selectedCatalogItem.sellerReputation], ["Estoque", selectedCatalogItem.availableQuantity], ["Vendidos", selectedCatalogItem.soldQuantity], ["Garantia", selectedCatalogItem.warranty]].map(([label, value]) => <div key={String(label)} className="rounded-lg bg-[#111813] p-3"><p className="text-xs text-[#718079]">{label}</p><p className="mt-1 break-words font-semibold">{value == null ? "—" : String(value)}</p></div>)}</div></div></div>
+                        {selectedCatalogItem.attributes?.length ? <div><p className="mb-3 text-sm font-bold text-[#b7c4bc]">Ficha técnica ({selectedCatalogItem.attributes.length})</p><div className="grid gap-2 sm:grid-cols-2">{selectedCatalogItem.attributes.slice(0, 40).map((attribute, index) => <div key={`${String(attribute.id || attribute.name)}-${index}`} className="rounded-lg border border-[#27322b] bg-[#0d1310] px-3 py-2"><p className="text-xs text-[#718079]">{String(attribute.name || attribute.id || "Atributo")}</p><p className="mt-1 text-sm font-medium">{String(attribute.value_name || attribute.valueName || attribute.value_id || "—")}</p></div>)}</div></div> : null}
+                        <details className="rounded-xl border border-[#27322b] bg-[#080c09]"><summary className="cursor-pointer px-3 py-3 text-sm font-semibold">Resposta completa da API</summary><div className="border-t border-[#27322b] p-3"><Button variant="outline" size="sm" onClick={() => { void navigator.clipboard.writeText(JSON.stringify(selectedCatalogItem, null, 2)); toast.success("Dados copiados."); }} className="mb-3 border-[#34423a] bg-[#111813] text-white"><Copy /> Copiar JSON</Button><pre className="max-h-72 overflow-auto whitespace-pre-wrap break-all text-xs leading-5 text-[#8fd9a4]">{JSON.stringify(selectedCatalogItem, null, 2)}</pre></div></details>
+                      </div>
+                      <div className="space-y-4 lg:sticky lg:top-0 lg:self-start"><div className="rounded-2xl border border-[#31543b] bg-[#0b1710] p-4"><div className="flex items-center justify-between gap-3"><div><p className="font-bold text-[#8af3a5]">Mensagem para o WhatsApp</p><p className="mt-1 text-xs leading-5 text-[#94a69b]">Edite livremente antes de enviar.</p></div>{offerPreparing && <LoaderCircle className="size-5 animate-spin text-[#62ef8b]" />}</div><Textarea value={offerMessage} onChange={(event) => setOfferMessage(event.target.value)} rows={10} className="mt-4 min-h-56 resize-y border-[#34423a] bg-[#070b08] leading-6" /><div className="mt-4 space-y-3"><label className="space-y-2 text-sm font-semibold">Grupo de destino<NativeSelect value={offerDestination} onChange={(event) => setOfferDestination(event.target.value)}><NativeSelectOption value="">Escolha um grupo</NativeSelectOption>{destinationGroups.map((destination) => <NativeSelectOption key={destination.JID} value={destination.JID}>{destination.Name}</NativeSelectOption>)}</NativeSelect></label><div className="flex items-center justify-between rounded-xl border border-[#27322b] bg-[#080c09] p-3"><div><p className="text-sm font-semibold">Enviar foto oficial</p><p className="mt-1 text-xs text-[#718079]">Usa a imagem extraída da loja.</p></div><Switch checked={offerIncludeImage} onCheckedChange={setOfferIncludeImage} disabled={!selectedCatalogItem.imageUrl} aria-label="Enviar foto oficial" /></div><div className="grid gap-2 sm:grid-cols-2"><Button variant="outline" onClick={() => { void navigator.clipboard.writeText(offerMessage); toast.success("Mensagem copiada."); }} className="border-[#34423a] bg-[#111813] text-white"><Copy /> Copiar</Button><Button onClick={() => void sendPreparedOffer()} disabled={offerSending || offerPreparing || !offerDestination || !offerMessage.trim()} className="bg-[#24c75a] font-extrabold text-[#04140a] hover:bg-[#46df75]">{offerSending ? <LoaderCircle className="animate-spin" /> : <Send />} Enviar agora</Button></div></div></div></div>
+                    </div>
+                  </>}
+                </DialogContent>
+              </Dialog>
             </TabsContent>
 
             <TabsContent value="ranking" id="ranking-mercado-livre">
               <div className="space-y-5">
                 <Card className="overflow-hidden border-[#4a4615] bg-[#0b100d] shadow-none">
                   <CardHeader className="border-b border-[#34351c] bg-[linear-gradient(110deg,rgba(255,230,0,.12),transparent_62%)]">
-                    <div className="flex items-start gap-3"><div className="grid size-11 shrink-0 place-items-center rounded-xl bg-[#ffe600] text-[#231f00]"><Trophy className="size-5" /></div><div><CardTitle className="text-xl">Descobrir as melhores ofertas da página</CardTitle><CardDescription className="mt-1">Cole uma URL de listagem. O painel consulta a API oficial, percorre as páginas e cria um ranking próprio.</CardDescription></div></div>
+                    <div className="flex items-start gap-3"><div className="grid size-11 shrink-0 place-items-center rounded-xl bg-[#ffe600] text-[#231f00]"><Trophy className="size-5" /></div><div><CardTitle className="text-xl">Descobrir ofertas do catálogo</CardTitle><CardDescription className="mt-1">Cole uma URL de listagem. O painel entende a busca, consulta o catálogo oficial e compara a oferta vencedora de cada produto.</CardDescription></div></div>
                   </CardHeader>
                   <CardContent className="space-y-4 pt-5">
                     <label className="block space-y-2 text-sm font-semibold">URL da listagem do Mercado Livre<Input value={rankingUrl} onChange={(event) => setRankingUrl(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void analyzeMercadoLivreListing(); }} placeholder="https://lista.mercadolivre.com.br/..." className="h-12 border-[#474831] bg-[#080c09]" /></label>
                     <div className="grid gap-3 sm:grid-cols-[220px_minmax(0,1fr)] sm:items-end">
-                      <label className="space-y-2 text-sm font-semibold">Limite da análise<NativeSelect value={rankingMaxPages} onChange={(event) => setRankingMaxPages(event.target.value)}><NativeSelectOption value="3">Até 150 produtos</NativeSelectOption><NativeSelectOption value="5">Até 250 produtos</NativeSelectOption><NativeSelectOption value="10">Até 500 produtos</NativeSelectOption><NativeSelectOption value="20">Até 1.000 produtos</NativeSelectOption></NativeSelect></label>
+                      <label className="space-y-2 text-sm font-semibold">Limite da análise<NativeSelect value={rankingMaxPages} onChange={(event) => setRankingMaxPages(event.target.value)}><NativeSelectOption value="1">Até 10 produtos</NativeSelectOption><NativeSelectOption value="2">Até 20 produtos</NativeSelectOption><NativeSelectOption value="3">Até 30 produtos</NativeSelectOption><NativeSelectOption value="5">Até 50 produtos</NativeSelectOption></NativeSelect></label>
                       <Button onClick={() => void analyzeMercadoLivreListing()} disabled={rankingLoading} className="h-12 rounded-xl bg-[#ffe600] font-extrabold text-[#231f00] hover:bg-[#fff05a]">{rankingLoading ? <LoaderCircle className="animate-spin" /> : <Trophy />} {rankingLoading ? "Percorrendo as páginas..." : "Analisar e criar ranking"}</Button>
                     </div>
-                    <p className="text-xs leading-5 text-[#94a69b]">A URL é usada para descobrir a busca e a categoria. O fragmento depois de <code>#</code> não altera a página consultada. O ranking é uma heurística do Promozap, não uma classificação oficial do Mercado Livre.</p>
+                    <p className="text-xs leading-5 text-[#94a69b]">A URL é usada para descobrir a busca. O fragmento depois de <code>#</code> não altera a consulta. Como a busca global antiga foi desativada pelo Mercado Livre, o ranking usa produtos do catálogo e a oferta vencedora (buy box). A nota é uma heurística do Promozap.</p>
                     {rankingError && <div className="rounded-xl border border-[#784235] bg-[#21110e] p-3 text-sm leading-6 text-[#ffb0a7]">{rankingError}</div>}
                   </CardContent>
                 </Card>

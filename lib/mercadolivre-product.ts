@@ -1,5 +1,5 @@
-import { env } from "cloudflare:workers";
 import { parseMercadoLivreCookies } from "@/lib/mercadolivre-affiliate";
+import { getMercadoLivreOffer } from "@/lib/mercadolivre-api";
 
 type MercadoLivreProductVisual = {
   title: string | null;
@@ -46,33 +46,45 @@ function compactApiData(value: Record<string, unknown>) {
 }
 
 async function getOfficialApiProduct(productCode: string, resolvedUrl: string) {
-  const token = (env as unknown as { MERCADOLIVRE_ACCESS_TOKEN?: string }).MERCADOLIVRE_ACCESS_TOKEN;
-  const likelyCatalog = /\/p\/MLB\d+/i.test(resolvedUrl);
-  const endpoints = likelyCatalog
-    ? [["mercadolivre_catalog_api", `https://api.mercadolibre.com/products/${productCode}`], ["mercadolivre_items_api", `https://api.mercadolibre.com/items/${productCode}`]]
-    : [["mercadolivre_items_api", `https://api.mercadolibre.com/items/${productCode}`], ["mercadolivre_catalog_api", `https://api.mercadolibre.com/products/${productCode}`]];
-  for (const [source, endpoint] of endpoints) {
-    try {
-      const response = await fetch(endpoint, {
-        headers: { Accept: "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-        cache: "no-store",
-        signal: AbortSignal.timeout(8_000),
-      });
-      if (!response.ok) continue;
-      const data = await response.json() as Record<string, unknown>;
-      const picture = Array.isArray(data.pictures) ? data.pictures[0] as Record<string, unknown> | undefined : undefined;
-      const imageUrl = safeOfficialImage(typeof picture?.secure_url === "string" ? picture.secure_url : typeof picture?.url === "string" ? picture.url : null);
-      return {
-        title: typeof data.title === "string" ? data.title : typeof data.name === "string" ? data.name : null,
-        imageUrl,
-        source: source as "mercadolivre_items_api" | "mercadolivre_catalog_api",
-        details: compactApiData(data),
-      };
-    } catch {
-      // Tenta o outro recurso oficial e, depois, a página pública.
-    }
+  try {
+    const offer = await getMercadoLivreOffer(resolvedUrl || productCode);
+    return {
+      title: offer.title,
+      imageUrl: safeOfficialImage(offer.imageUrl),
+      source: offer.itemId ? "mercadolivre_items_api" as const : "mercadolivre_catalog_api" as const,
+      details: {
+        id: offer.itemId || offer.catalogProductId,
+        itemId: offer.itemId,
+        catalogProductId: offer.catalogProductId,
+        title: offer.title,
+        price: offer.price,
+        originalPrice: offer.originalPrice,
+        discountPercentage: offer.discountPercentage,
+        currencyId: offer.currency,
+        availableQuantity: offer.availableQuantity,
+        soldQuantity: offer.soldQuantity,
+        condition: offer.condition,
+        categoryId: offer.categoryId,
+        categoryName: offer.categoryName,
+        sellerId: offer.sellerId,
+        seller: offer.seller,
+        sellerReputation: offer.sellerReputation,
+        officialStore: offer.officialStore,
+        permalink: offer.url,
+        warranty: offer.warranty,
+        shipping: { freeShipping: offer.freeShipping, full: offer.full, logisticType: offer.logisticType },
+        installments: offer.installments,
+        promotionType: offer.promotionType,
+        pictures: offer.pictures,
+        attributes: offer.attributes,
+        saleTerms: offer.saleTerms,
+        tags: offer.tags,
+        source: offer.source,
+      },
+    };
+  } catch {
+    return null;
   }
-  return null;
 }
 
 function decodeHtml(value: string) {
