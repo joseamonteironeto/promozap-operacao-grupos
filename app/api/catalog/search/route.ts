@@ -19,8 +19,24 @@ async function searchMercadoLivre(params: URLSearchParams) {
   }
   const minPrice = numberParam(params.get("minPrice"));
   const maxPrice = numberParam(params.get("maxPrice"));
+  const quality = params.get("quality") || "all";
   const result = await searchMercadoLivreOffers(query, 20);
-  const items = result.items.filter((item) => (!minPrice || (item.price != null && item.price >= minPrice)) && (!maxPrice || (item.price != null && item.price <= maxPrice)));
+  const qualifies = (item: (typeof result.items)[number]) => {
+    if (quality === "priced") return item.price != null;
+    if (quality === "good_deal") return item.price != null && (item.discountPercentage >= 10 || Boolean(item.coupon) || Boolean(item.bestSellerPosition) || (item.soldQuantity || 0) >= 100);
+    if (quality === "coupon") return Boolean(item.coupon);
+    if (quality === "free_shipping") return item.freeShipping;
+    if (quality === "full") return item.full;
+    if (quality === "official_store") return Boolean(item.officialStore);
+    return true;
+  };
+  const items = result.items
+    .filter((item) => (!minPrice || (item.price != null && item.price >= minPrice)) && (!maxPrice || (item.price != null && item.price <= maxPrice)) && qualifies(item));
+  const sort = params.get("sort") || "relevance";
+  if (sort === "price_asc") items.sort((a, b) => (a.price ?? Number.POSITIVE_INFINITY) - (b.price ?? Number.POSITIVE_INFINITY));
+  if (sort === "price_desc") items.sort((a, b) => (b.price ?? -1) - (a.price ?? -1));
+  if (sort === "discount_desc") items.sort((a, b) => b.discountPercentage - a.discountPercentage);
+  if (sort === "sold_desc") items.sort((a, b) => (b.soldQuantity || 0) - (a.soldQuantity || 0));
   return {
     store: "mercadolivre",
     query,
@@ -28,7 +44,13 @@ async function searchMercadoLivre(params: URLSearchParams) {
     total: result.total,
     filters: result.category ? [{ id: "category", name: "Categoria detectada", values: [{ id: result.category.categoryId, name: result.category.categoryName || result.category.domainName }] }] : [],
     appliedFilters: [],
-    sorts: [{ id: "best_sellers", name: "Mais vendidos e ofertas ativas" }],
+    sorts: [
+      { id: "relevance", name: "Relevância" },
+      { id: "discount_desc", name: "Maior desconto" },
+      { id: "sold_desc", name: "Mais vendidos" },
+      { id: "price_asc", name: "Menor preço" },
+      { id: "price_desc", name: "Maior preço" },
+    ],
     source: result.mode,
     category: result.category,
     warning: result.marketplaceWarning,

@@ -208,6 +208,8 @@ type CatalogSearchResponse = {
   warning?: string | null;
 };
 
+type MercadoLivreCategory = { id: string; name: string };
+
 type RankedProduct = {
   id: string;
   position: number;
@@ -436,6 +438,11 @@ export default function Dashboard() {
   const [catalogSort, setCatalogSort] = useState("");
   const [catalogMinPrice, setCatalogMinPrice] = useState("");
   const [catalogMaxPrice, setCatalogMaxPrice] = useState("");
+  const [catalogQuality, setCatalogQuality] = useState("all");
+  const [catalogCategory, setCatalogCategory] = useState("");
+  const [catalogSubcategory, setCatalogSubcategory] = useState("");
+  const [mercadoLivreCategories, setMercadoLivreCategories] = useState<MercadoLivreCategory[]>([]);
+  const [mercadoLivreSubcategories, setMercadoLivreSubcategories] = useState<MercadoLivreCategory[]>([]);
   const [catalogItems, setCatalogItems] = useState<CatalogItem[]>([]);
   const [catalogFilters, setCatalogFilters] = useState<unknown>(null);
   const [catalogSorts, setCatalogSorts] = useState<Array<string | { id: string; name: string }>>([]);
@@ -906,6 +913,10 @@ export default function Dashboard() {
       if (catalogSort) params.set("sort", catalogSort);
       if (catalogMinPrice) params.set("minPrice", catalogMinPrice);
       if (catalogMaxPrice) params.set("maxPrice", catalogMaxPrice);
+      if (catalogQuality) params.set("quality", catalogQuality);
+      const selectedCategory = mercadoLivreSubcategories.find((category) => category.id === catalogSubcategory)
+        || mercadoLivreCategories.find((category) => category.id === catalogCategory);
+      if (catalogSearchStore === "mercadolivre" && selectedCategory) params.set("q", `${selectedCategory.name} ${catalogQuery.trim()}`.trim());
       const response = await fetch(`/api/catalog/search?${params}`);
       const result = await response.json() as CatalogSearchResponse;
       if (!response.ok) throw new Error(result.error || "Não foi possível consultar os produtos.");
@@ -922,6 +933,18 @@ export default function Dashboard() {
       setCatalogError(caught instanceof Error ? caught.message : "Não foi possível consultar os produtos.");
     } finally {
       setCatalogSearching(false);
+    }
+  }
+
+  async function loadMercadoLivreCategories(parent = "") {
+    try {
+      const response = await fetch(`/api/catalog/mercadolivre-categories${parent ? `?parent=${encodeURIComponent(parent)}` : ""}`);
+      const result = await response.json() as { categories?: MercadoLivreCategory[] };
+      if (!response.ok) return;
+      if (parent) setMercadoLivreSubcategories(result.categories || []);
+      else setMercadoLivreCategories(result.categories || []);
+    } catch {
+      // A busca continua utilizável mesmo se a árvore oficial estiver indisponível.
     }
   }
 
@@ -1078,7 +1101,10 @@ export default function Dashboard() {
   }, [activeTab]);
 
   useEffect(() => {
-    if (activeTab === "discovery") void loadCatalogCredentialStatus();
+    if (activeTab === "discovery") {
+      void loadCatalogCredentialStatus();
+      if (!mercadoLivreCategories.length) void loadMercadoLivreCategories();
+    }
   }, [activeTab]);
 
   useEffect(() => {
@@ -1497,18 +1523,23 @@ export default function Dashboard() {
                         <label className="space-y-2 text-sm font-semibold">Loja<NativeSelect value={catalogSearchStore} onChange={(event) => { setCatalogSearchStore(event.target.value as "amazon" | "mercadolivre"); setCatalogItems([]); setCatalogFilters(null); setCatalogSort(""); setCatalogError(""); }}><NativeSelectOption value="mercadolivre">Mercado Livre</NativeSelectOption><NativeSelectOption value="amazon">Amazon</NativeSelectOption></NativeSelect></label>
                         <label className="space-y-2 text-sm font-semibold">Ordenar<NativeSelect value={catalogSort} onChange={(event) => setCatalogSort(event.target.value)}><NativeSelectOption value="">Relevância</NativeSelectOption>{catalogSorts.map((sort) => { const value = typeof sort === "string" ? sort : sort.id; const label = typeof sort === "string" ? sort : sort.name; return <NativeSelectOption key={value} value={value}>{label}</NativeSelectOption>; })}</NativeSelect></label>
                       </div>
+                      {catalogSearchStore === "mercadolivre" && <div className="grid gap-3 sm:grid-cols-2">
+                        <label className="space-y-2 text-sm font-semibold">Categoria oficial<NativeSelect value={catalogCategory} onChange={(event) => { const value = event.target.value; setCatalogCategory(value); setCatalogSubcategory(""); setMercadoLivreSubcategories([]); if (value) void loadMercadoLivreCategories(value); }}><NativeSelectOption value="">Todas as categorias</NativeSelectOption>{mercadoLivreCategories.map((category) => <NativeSelectOption key={category.id} value={category.id}>{category.name}</NativeSelectOption>)}</NativeSelect></label>
+                        <label className="space-y-2 text-sm font-semibold">Subcategoria<NativeSelect value={catalogSubcategory} onChange={(event) => setCatalogSubcategory(event.target.value)} disabled={!catalogCategory || !mercadoLivreSubcategories.length}><NativeSelectOption value="">Todas as subcategorias</NativeSelectOption>{mercadoLivreSubcategories.map((category) => <NativeSelectOption key={category.id} value={category.id}>{category.name}</NativeSelectOption>)}</NativeSelect></label>
+                      </div>}
                       <label className="block space-y-2 text-sm font-semibold">Produto, link ou ID<div className="relative"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[#718079]" /><Input value={catalogQuery} onChange={(event) => setCatalogQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void searchCatalog(); }} placeholder={catalogSearchStore === "amazon" ? "Ex.: cafeteira ou link da Amazon" : "Ex.: notebook, link do produto ou MLB123456789"} className="h-12 border-[#34423a] bg-[#080c09] pl-10" /></div></label>
                       <div className="grid gap-3 sm:grid-cols-2"><label className="space-y-2 text-sm font-semibold">Preço mínimo<Input type="number" min="0" value={catalogMinPrice} onChange={(event) => setCatalogMinPrice(event.target.value)} placeholder="R$ 0" className="h-11 border-[#34423a] bg-[#080c09]" /></label><label className="space-y-2 text-sm font-semibold">Preço máximo<Input type="number" min="0" value={catalogMaxPrice} onChange={(event) => setCatalogMaxPrice(event.target.value)} placeholder="Sem limite" className="h-11 border-[#34423a] bg-[#080c09]" /></label></div>
+                      {catalogSearchStore === "mercadolivre" && <label className="block space-y-2 text-sm font-semibold">Qualidade da oferta<NativeSelect value={catalogQuality} onChange={(event) => setCatalogQuality(event.target.value)}><NativeSelectOption value="all">Todas</NativeSelectOption><NativeSelectOption value="priced">Somente com preço confirmado</NativeSelectOption><NativeSelectOption value="good_deal">Boas ofertas</NativeSelectOption><NativeSelectOption value="coupon">Com cupom</NativeSelectOption><NativeSelectOption value="free_shipping">Frete grátis</NativeSelectOption><NativeSelectOption value="full">Envio Full</NativeSelectOption><NativeSelectOption value="official_store">Loja oficial</NativeSelectOption></NativeSelect></label>}
                       <Button onClick={() => void searchCatalog()} disabled={catalogSearching} className="h-12 w-full rounded-xl bg-[#24c75a] font-bold text-[#04140a] hover:bg-[#46df75]">{catalogSearching ? <LoaderCircle className="animate-spin" /> : <Search />} {catalogSearching ? "Cruzando dados oficiais..." : catalogQuery.trim() ? "Buscar ofertas" : "Ver recomendações"}</Button>
                       {catalogError && <div className="rounded-xl border border-[#784235] bg-[#21110e] p-3 text-sm leading-6 text-[#ffb0a7]">{catalogError}</div>}
-                      {catalogWarning && <div className="flex items-start gap-3 rounded-xl border border-[#66532e] bg-[#241d0c] p-3 text-sm leading-6 text-[#e6c47d]"><CircleAlert className="mt-1 size-4 shrink-0" /><span>{catalogWarning} Abra Afiliados → Mercado Livre, cole uma exportação recente dos cookies e salve; a próxima busca tentará novamente automaticamente.</span></div>}
+                      {catalogWarning && <div className="flex items-start gap-3 rounded-xl border border-[#66532e] bg-[#241d0c] p-3 text-sm leading-6 text-[#e6c47d]"><CircleAlert className="mt-1 size-4 shrink-0" /><div><p className="font-bold">Por que nenhum preço apareceu?</p><p className="mt-1">A API de catálogo devolveu produtos e imagens, mas não uma oferta vencedora. A API de preços bloqueou anúncios de outros vendedores e a leitura da vitrine pediu validação dos cookies salvos. Por segurança, o painel não inventa nem reaproveita preço antigo.</p><p className="mt-2">{catalogWarning} Vá em <strong>Afiliados → Mercado Livre</strong>, cole uma exportação recente dos cookies e salve; a próxima busca tentará novamente automaticamente.</p></div></div>}
                     </CardContent>
                   </Card>
 
-                  {catalogItems.length > 0 && <div className="grid gap-4 sm:grid-cols-2 2xl:grid-cols-3">{catalogItems.map((item) => (
+                  {catalogItems.length > 0 && <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">{catalogItems.map((item) => (
                     <Card key={item.id} className="group overflow-hidden border-[#27322b] bg-[#0b100d] shadow-none transition hover:border-[#3e5948]">
-                      <div className="relative aspect-[4/3] bg-white p-3">{item.imageUrl ? <img src={item.imageUrl} alt={item.title} className="h-full w-full object-contain" loading="lazy" /> : <div className="grid h-full place-items-center"><ShoppingBag className="size-8 text-[#607267]" /></div>}{item.bestSellerPosition && <div className="absolute left-3 top-3 rounded-full bg-[#ffe600] px-3 py-1 text-xs font-black text-[#231f00]">#{item.bestSellerPosition} mais vendido</div>}</div>
-                      <CardContent className="space-y-3 p-4"><div className="flex flex-wrap gap-2"><Badge className={catalogSearchStore === "amazon" ? "bg-[#ff9900] text-[#231500]" : "bg-[#ffe600] text-[#231f00]"}>{catalogSearchStore === "amazon" ? "Amazon" : item.source === "item" ? "Anúncio" : item.source === "buy_box" ? "Oferta vencedora" : item.source === "best_seller" ? "Mais vendido" : "Catálogo"}</Badge>{item.discountPercentage ? <Badge className="bg-[#24c75a] text-[#04140a]">-{item.discountPercentage}%</Badge> : null}{item.freeShipping && <Badge className="border border-[#2d8a4b] bg-[#153520] text-[#8af3a5]">Frete grátis</Badge>}{item.full && <Badge className="border border-[#365078] bg-[#14233a] text-[#9bc4ff]">Full</Badge>}</div><h3 className="line-clamp-3 min-h-[4.5rem] font-bold leading-6">{item.title}</h3><div><p className="text-2xl font-extrabold text-[#62ef8b]">{item.price != null ? new Intl.NumberFormat("pt-BR", { style: "currency", currency: item.currency || "BRL" }).format(item.price) : "Sem oferta ativa"}</p>{item.originalPrice && item.originalPrice > (item.price || 0) ? <p className="text-sm text-[#718079] line-through">{new Intl.NumberFormat("pt-BR", { style: "currency", currency: item.currency || "BRL" }).format(item.originalPrice)}</p> : null}</div><div className="grid grid-cols-2 gap-2 text-xs text-[#94a69b]"><p>ID: {item.itemId || item.catalogProductId || item.id}</p><p>{item.soldQuantity != null ? `${item.soldQuantity} vendidos` : item.categoryName || "Categoria oficial"}</p>{item.seller && <p className="col-span-2 truncate">Vendedor: {item.seller}</p>}</div><div className="grid grid-cols-2 gap-2"><Button onClick={() => void prepareCatalogOffer(item)} disabled={item.price == null || offerPreparing} className="bg-[#24c75a] font-bold text-[#04140a] hover:bg-[#46df75]"><Send /> Preparar</Button>{item.url ? <Button asChild variant="outline" className="border-[#34423a] bg-[#111813] text-white hover:bg-[#19231c]"><a href={item.url} target="_blank" rel="noreferrer"><ExternalLink /> Abrir</a></Button> : <Button variant="outline" disabled>Abrir</Button>}</div><Button onClick={() => void prepareCatalogOffer(item)} variant="ghost" className="w-full text-[#9fb0a5] hover:bg-[#121b15] hover:text-white"><Database /> Ver todos os dados</Button></CardContent>
+                      <div className="relative aspect-square bg-white p-2">{item.imageUrl ? <img src={item.imageUrl} alt={item.title} className="h-full w-full object-contain" loading="lazy" /> : <div className="grid h-full place-items-center"><ShoppingBag className="size-7 text-[#607267]" /></div>}{item.bestSellerPosition && <div className="absolute left-2 top-2 rounded-full bg-[#ffe600] px-2 py-1 text-[10px] font-black text-[#231f00]">#{item.bestSellerPosition} mais vendido</div>}</div>
+                      <CardContent className="space-y-2.5 p-3"><div className="flex flex-wrap gap-1.5"><Badge className={catalogSearchStore === "amazon" ? "bg-[#ff9900] text-[#231500]" : "bg-[#ffe600] text-[#231f00]"}>{catalogSearchStore === "amazon" ? "Amazon" : item.source === "web_search" ? "Marketplace" : item.source === "item" ? "Anúncio" : item.source === "buy_box" ? "Oferta" : item.source === "best_seller" ? "Mais vendido" : "Catálogo"}</Badge>{item.discountPercentage ? <Badge className="bg-[#24c75a] text-[#04140a]">-{item.discountPercentage}%</Badge> : null}{item.coupon && <Badge className="bg-[#3a2154] text-[#dcb6ff]">Cupom</Badge>}{item.full && <Badge className="border border-[#365078] bg-[#14233a] text-[#9bc4ff]">Full</Badge>}</div><h3 className="line-clamp-2 min-h-10 text-sm font-bold leading-5">{item.title}</h3><div><p className="text-xl font-extrabold text-[#62ef8b]">{item.price != null ? new Intl.NumberFormat("pt-BR", { style: "currency", currency: item.currency || "BRL" }).format(item.price) : "Preço indisponível"}</p>{item.originalPrice && item.originalPrice > (item.price || 0) ? <p className="text-xs text-[#718079] line-through">{new Intl.NumberFormat("pt-BR", { style: "currency", currency: item.currency || "BRL" }).format(item.originalPrice)}</p> : null}</div><div className="text-[11px] text-[#94a69b]"><p className="truncate">{item.soldQuantity != null ? `${item.soldQuantity} vendidos` : item.itemId || item.catalogProductId || item.id}</p>{item.freeShipping && <p className="font-semibold text-[#8af3a5]">Frete grátis</p>}</div><div className="grid grid-cols-2 gap-1.5"><Button size="sm" onClick={() => void prepareCatalogOffer(item)} disabled={item.price == null || offerPreparing} className="bg-[#24c75a] px-2 font-bold text-[#04140a] hover:bg-[#46df75]"><Send /> Preparar</Button>{item.url ? <Button asChild size="sm" variant="outline" className="border-[#34423a] bg-[#111813] px-2 text-white hover:bg-[#19231c]"><a href={item.url} target="_blank" rel="noreferrer"><ExternalLink /> Abrir</a></Button> : <Button size="sm" variant="outline" disabled>Abrir</Button>}</div><Button size="sm" onClick={() => void prepareCatalogOffer(item)} variant="ghost" className="h-8 w-full text-xs text-[#9fb0a5] hover:bg-[#121b15] hover:text-white"><Database /> Dados</Button></CardContent>
                     </Card>
                   ))}</div>}
                 </div>
