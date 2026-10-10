@@ -8,10 +8,11 @@ Este pequeno serviço abre o Google Chrome no seu computador e lê a página que
 2. Dê dois cliques em `iniciar-coletor.cmd`.
 3. O painel local será aberto automaticamente no seu navegador.
 4. Cole a URL ou um código `MLB...` e clique em **Abrir Chrome e extrair dados**.
-5. Para pesquisar várias ofertas, use **Buscar ofertas reais por categoria**, informe a página `/ofertas`, a categoria, o desconto mínimo e a quantidade máxima. Selecione **Geral** para percorrer todas as ofertas do dia.
-6. Clique em **Iniciar monitoramento** para repetir a consulta a cada 15, 30 ou 60 minutos enquanto o coletor estiver aberto.
-7. Se preferir a integração direta do painel online, copie o **Token local** mostrado na janela preta.
-8. Na primeira execução, entre na sua conta do Mercado Livre na janela do Chrome aberta pelo coletor. Essa sessão fica somente em `local-collector/state/chrome-profile` no seu computador.
+5. Para pesquisar várias ofertas, escolha quantos anúncios deseja **analisar** (até 10.000) e quantos deseja **mostrar** no catálogo (até 500). Essa separação evita tentar renderizar milhares de cartões de uma vez.
+6. Para começar por smartphones, clique em **Aplicar preset Celulares**. Ele seleciona a categoria, ativa a validação de ofertas e prepara uma varredura de até 10.000 anúncios.
+7. Clique em **Ativar monitor de novidades** para repetir a consulta enquanto o coletor estiver aberto.
+8. Se preferir a integração direta do painel online, copie o **Token local** mostrado na janela preta.
+9. Na primeira execução, entre na sua conta do Mercado Livre na janela do Chrome aberta pelo coletor. Essa sessão fica somente em `local-collector/state/chrome-profile` no seu computador.
 
 O coletor não tenta resolver CAPTCHA nem confirmação de identidade. Se o Mercado Livre pedir uma validação, conclua-a manualmente na janela aberta e tente novamente.
 
@@ -31,5 +32,9 @@ Preço anterior, preço normal, preço no Pix, desconto, cupom, benefício, comp
 Cada consulta individual salva uma medição em `state/price-history.json`. O detalhe mostra o preço atual, o menor e o maior valor observados e um gráfico real da evolução. O preço anterior exibido pelo Mercado Livre aparece separadamente como referência; ele não é tratado como uma medição histórica.
 
 No catálogo, os produtos são ordenados por uma pontuação que combina desconto calculado sobre o preço anterior, cupom, oferta do dia, frete grátis, loja oficial, avaliação e volume de vendas. O filtro de categoria é aplicado na própria página do Mercado Livre, como faria uma pessoa no navegador.
+
+Com **Só ofertas validadas**, o preço riscado não basta. O coletor cruza o preço efetivo com o histórico salvo e sinais independentes de confiança. Enquanto ainda não existem medições suficientes, uma oferta recebe confiança média somente quando reúne desconto forte, outro sinal comercial (oferta do dia ou cupom) e pelo menos um sinal de confiança (loja oficial, boa avaliação, frete grátis ou alto volume vendido). Depois de formar histórico, preços abaixo da mediana observada ganham mais peso. Em celulares, acessórios como capas, cabos e películas são removidos pelo preset.
+
+O teto de 10.000 significa **até** 10.000 anúncios: o Mercado Livre pode encerrar a paginação antes, repetir resultados ou solicitar CAPTCHA. Varreduras grandes levam mais tempo; use 500 para exploração e 10.000 para uma coleta ampla ou monitoramento agendado.
 
 Os valores podem variar conforme conta, CEP, Meli+ e benefícios de primeira compra. O resultado registra esse contexto para evitar tratar um preço personalizado como universal.
