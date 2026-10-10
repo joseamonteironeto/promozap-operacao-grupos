@@ -8,7 +8,7 @@ Este pequeno serviço abre o Google Chrome no seu computador e lê a página que
 2. Dê dois cliques em `iniciar-coletor.cmd`.
 3. O painel local será aberto automaticamente no seu navegador.
 4. Cole a URL ou um código `MLB...` e clique em **Abrir Chrome e extrair dados**.
-5. Para pesquisar várias ofertas, use **Buscar ofertas reais por categoria**, informe a página `/ofertas`, a categoria, o desconto mínimo e a quantidade máxima.
+5. Para pesquisar várias ofertas, use **Buscar ofertas reais por categoria**, informe a página `/ofertas`, a categoria, o desconto mínimo e a quantidade máxima. Selecione **Geral** para percorrer todas as ofertas do dia.
 6. Clique em **Iniciar monitoramento** para repetir a consulta a cada 15, 30 ou 60 minutos enquanto o coletor estiver aberto.
 7. Se preferir a integração direta do painel online, copie o **Token local** mostrado na janela preta.
 8. Na primeira execução, entre na sua conta do Mercado Livre na janela do Chrome aberta pelo coletor. Essa sessão fica somente em `local-collector/state/chrome-profile` no seu computador.
@@ -26,7 +26,9 @@ Um código `MLBU...` isolado não contém o slug necessário para reconstruir a 
 
 ## Dados coletados
 
-Preço anterior, preço normal, preço no Pix, desconto, cupom, benefício, compra mínima, código (quando visível), preço com cupom, parcelas, título, IDs MLB/MLBU, imagens oficiais, vendedor, loja oficial, vendidos, estoque, entrega, frete, avaliação, descrição, categorias e ficha técnica.
+Preço anterior, preço normal, preço no Pix, desconto, cupom, benefício, compra mínima, código (quando visível), preço com cupom, parcelas, título, IDs MLB/MLBU, imagens oficiais, vendedor, loja oficial, vendidos, estoque, entrega, frete, avaliação, descrição, categorias e ficha técnica. O detalhe também reúne até 10 avaliações públicas e associa a cada uma as fotos publicadas pelo comprador.
+
+Cada consulta individual salva uma medição em `state/price-history.json`. O detalhe mostra o preço atual, o menor e o maior valor observados e um gráfico real da evolução. O preço anterior exibido pelo Mercado Livre aparece separadamente como referência; ele não é tratado como uma medição histórica.
 
 No catálogo, os produtos são ordenados por uma pontuação que combina desconto calculado sobre o preço anterior, cupom, oferta do dia, frete grátis, loja oficial, avaliação e volume de vendas. O filtro de categoria é aplicado na própria página do Mercado Livre, como faria uma pessoa no navegador.
 
