@@ -318,7 +318,7 @@ const dealsExtractor = String.raw`(() => {
     const text = (node.textContent || '').replace(/\s+/g, ' ').trim();
     const count = Number(text.match(/\((\d+)\)/)?.[1] || 0);
     return { name: text.replace(/\s*\(\d+\)\s*$/, ''), count };
-  }).filter((item) => item.name && !/Até R\$|Mais de R\$|Parcelamento|Grátis/i.test(item.name));
+  }).filter((item) => item.name && !/R\$|Parcelamento|Grátis/i.test(item.name));
   const cards = [...document.querySelectorAll('.poly-card')].map((card, index) => {
     const link = card.querySelector('a.poly-component__title, h2 a, h3 a');
     const title = link?.textContent?.trim();
@@ -352,7 +352,7 @@ const dealsExtractor = String.raw`(() => {
       discountText,
       coupon,
       seller,
-      officialStore: /Loja oficial/i.test(text),
+      officialStore: /Loja oficial/i.test(text) || Boolean(card.querySelector('img[alt*="Loja oficial" i], [aria-label*="Loja oficial" i]')),
       rating: Number(ratingText.match(/([\d.,]+)\s+de\s+5/i)?.[1]?.replace(',', '.') || text.match(/\b([1-5][.,]\d)\s*\|/)?.[1]?.replace(',', '.')) || null,
       soldText: text.match(/\+?[\d.,]+\s*(?:mil\s+)?vendidos/i)?.[0] || null,
       freeShipping: /frete grátis|chegará grátis/i.test(text),
