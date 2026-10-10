@@ -420,6 +420,8 @@ const dealsExtractor = String.raw`(() => {
 })()`;
 
 let scrapeQueue = Promise.resolve();
+let activeDealsRun = null;
+const dealsCache = new Map();
 
 function normalizeDealsUrl(input) {
   const value = String(input || "https://www.mercadolivre.com.br/ofertas?promotion_type=deal_of_the_day").trim();
@@ -485,6 +487,19 @@ function scoreDeal(product) {
   };
 }
 
+const mercadoLivreCategoryIds = {
+  "Acessórios para Veículos": "MLB5672", "Agro": "MLB271599", "Alimentos e Bebidas": "MLB1403",
+  "Antiguidades e Coleções": "MLB1367", "Arte, Papelaria e Armarinho": "MLB1368", "Bebês": "MLB1384",
+  "Beleza e Cuidado Pessoal": "MLB1246", "Brinquedos e Hobbies": "MLB1132", "Calçados, Roupas e Bolsas": "MLB1430",
+  "Casa, Móveis e Decoração": "MLB1574", "Celulares e Telefones": "MLB1051", "Construção": "MLB1500",
+  "Câmeras e Acessórios": "MLB1039", "Eletrodomésticos": "MLB5726", "Eletrônicos, Áudio e Vídeo": "MLB1000",
+  "Esportes e Fitness": "MLB1276", "Ferramentas": "MLB263532", "Games": "MLB1144", "Informática": "MLB1648",
+  "Ingressos": "MLB1640", "Instrumentos Musicais": "MLB1182", "Joias e Relógios": "MLB3937",
+  "Livros, Revistas e Comics": "MLB1196", "Música, Filmes e Seriados": "MLB1168", "Pet Shop": "MLB1071",
+  "Animais": "MLB1071", "Festas e Lembrancinhas": "MLB12404", "Indústria e Comércio": "MLB1499",
+  "Saúde": "MLB264586", "Serviços": "MLB1540",
+};
+
 async function scanDeals(options = {}) {
   const startUrl = normalizeDealsUrl(options.url);
   const rawCategory = String(options.category || "").trim();
@@ -492,7 +507,18 @@ async function scanDeals(options = {}) {
   const limit = Math.max(1, Math.min(80, Number(options.limit) || 20));
   const minDiscount = Math.max(0, Math.min(95, Number(options.minDiscount) || 0));
   const couponsOnly = Boolean(options.couponsOnly);
+  const cacheKey = JSON.stringify({ startUrl, requestedCategory, limit, minDiscount, couponsOnly });
+  const cached = dealsCache.get(cacheKey);
+  if (cached && Date.now() - cached.savedAt < 90_000) return { ...cached.value, cached: true };
+  if (activeDealsRun) {
+    activeDealsRun.cancelled = true;
+    await closeChromeTarget(activeDealsRun.target, activeDealsRun.client);
+  }
+  const run = { cancelled: false, target: null, client: null };
+  activeDealsRun = run;
   const { target, client } = await createChromeTarget();
+  run.target = target;
+  run.client = client;
   const collected = [];
   let categories = [];
   let currentUrl = startUrl;
@@ -500,7 +526,9 @@ async function scanDeals(options = {}) {
   try {
     await client.call("Page.enable");
     await client.call("Runtime.enable");
-    for (let page = 0; page < 20 && currentUrl && collected.length < limit; page += 1) {
+    const maxPages = requestedCategory ? 4 : 6;
+    for (let page = 0; page < maxPages && currentUrl && collected.length < limit; page += 1) {
+      if (run.cancelled) throw new Error("Busca substituída por uma categoria mais recente.");
       const loaded = client.waitFor("Page.loadEventFired", 30000);
       await client.call("Page.navigate", { url: currentUrl });
       await loaded;
@@ -510,13 +538,18 @@ async function scanDeals(options = {}) {
       if (blocked?.result?.value) throw new Error("O Mercado Livre pediu validação. Resolva o CAPTCHA na janela do Chrome e tente novamente.");
 
       if (page === 0 && requestedCategory) {
-        const clickResult = await client.call("Runtime.evaluate", {
-          expression: `(() => { const wanted=${JSON.stringify(requestedCategory.toLocaleLowerCase("pt-BR"))}; const norm=(v)=>String(v||'').normalize('NFD').replace(/[\\u0300-\\u036f]/g,'').toLowerCase(); const node=[...document.querySelectorAll('.list-filter__list-element')].find((item)=>norm(item.textContent).includes(norm(wanted))); if(!node)return false; node.click(); return true; })()`,
+        const categoryResult = await client.call("Runtime.evaluate", {
+          expression: `(() => { const wanted=${JSON.stringify(requestedCategory.toLocaleLowerCase("pt-BR"))}; const norm=(v)=>String(v||'').normalize('NFD').replace(/[\\u0300-\\u036f]/g,'').toLowerCase().trim(); const anchors=[...document.querySelectorAll('a[href]')]; const anchor=anchors.find((item)=>norm(item.textContent)===norm(wanted))||anchors.find((item)=>norm(item.textContent).includes(norm(wanted))); return anchor?.href||null; })()`,
           returnByValue: true,
         });
-        if (!clickResult?.result?.value) throw new Error(`A categoria “${requestedCategory}” não apareceu nos filtros desta página.`);
-        await sleep(2500);
-        await waitForPage(client, "Boolean(document.querySelector('.poly-card'))", 15000);
+        const categoryId = mercadoLivreCategoryIds[requestedCategory];
+        const categoryUrl = categoryResult?.result?.value || (categoryId ? `${startUrl}${startUrl.includes("?") ? "&" : "?"}category=${encodeURIComponent(categoryId)}` : null);
+        if (!categoryUrl) throw new Error(`A categoria “${requestedCategory}” não possui uma rota reconhecida pelo Mercado Livre.`);
+        const categoryLoaded = client.waitFor("Page.loadEventFired", 25000);
+        await client.call("Page.navigate", { url: categoryUrl });
+        await categoryLoaded;
+        const categoryReady = await waitForPage(client, "Boolean(document.querySelector('.poly-card'))", 18000);
+        if (!categoryReady) throw new Error(`A categoria “${requestedCategory}” demorou demais para carregar.`);
       }
 
       const result = await client.call("Runtime.evaluate", { expression: dealsExtractor, returnByValue: true });
@@ -534,7 +567,7 @@ async function scanDeals(options = {}) {
       currentUrl = pageData.nextUrl;
     }
     collected.sort((a, b) => b.dealScore - a.dealScore || (b.realDiscountPercentage || 0) - (a.realDiscountPercentage || 0));
-    return {
+    const value = {
       ok: true,
       capturedAt: new Date().toISOString(),
       sourceUrl: startUrl,
@@ -544,8 +577,11 @@ async function scanDeals(options = {}) {
       products: collected,
       criteria: { limit, minDiscount, couponsOnly },
     };
+    dealsCache.set(cacheKey, { savedAt: Date.now(), value });
+    return value;
   } finally {
     await closeChromeTarget(target, client);
+    if (activeDealsRun === run) activeDealsRun = null;
   }
 }
 
@@ -657,7 +693,7 @@ function localPanelHtml() {
 </style></head><body><main class="wrap"><div class="hero"><div class="logo">%</div><div><div class="eyebrow">Promozap</div><h1>Inteligência de ofertas Mercado Livre</h1></div></div><section class="panel"><span class="status"><i class="dot"></i> Coletor ligado neste computador</span><label for="input">URL completa ou código MLB</label><input id="input" value="https://www.mercadolivre.com.br/o-boticario-zaad-infinity-eau-de-parfum-95ml/up/MLBU4815336108" placeholder="Cole a URL ou MLB123456789"><div class="actions"><button id="collect" class="primary">Abrir Chrome e extrair dados</button><a class="button secondary" href="https://promozap-operacao-grupos.joseattax.chatgpt.site/?v=45" target="_blank" rel="noreferrer">Voltar ao painel online</a></div><p class="hint">Além de preço e cupom, o coletor abre as opiniões do anúncio e reúne até 10 avaliações com as fotos publicadas por cada comprador.</p><div id="error" class="error" hidden></div></section><section id="result" class="panel result"><div class="product"><div class="image"><img id="image" alt="Imagem oficial do produto"></div><div><div class="badges"><span id="item" class="badge yellow"></span><span id="discount" class="badge"></span><span id="store" class="badge"></span><span id="coupon-badge" class="badge coupon" hidden></span></div><h2 id="title" class="title"></h2><div id="prices" class="prices"></div><div id="details" class="details"></div></div></div><section class="history-block"><div class="history-heading"><div><h3>Histórico de preço</h3><p id="history-note">O coletor começa a guardar as medições a partir da primeira consulta.</p></div><span id="history-verdict" class="badge"></span></div><div id="history-stats" class="history-stats"></div><div id="history-chart" class="history-chart"></div></section><div id="attrs" class="attrs"></div><h3 id="reviews-title" class="reviews-title"></h3><div id="reviews" class="reviews"></div><details class="json"><summary>Resposta completa (JSON)</summary><div class="actions"><button id="copy" class="secondary">Copiar JSON</button></div><pre id="json"></pre></details></section><section class="panel catalog-panel"><span class="status"><i class="dot"></i> Catálogo automático de promoções</span><h2>Buscar ofertas reais por categoria</h2><div class="filters"><div><label for="deals-url">Página de ofertas</label><input id="deals-url" value="https://www.mercadolivre.com.br/ofertas?container_id=MLB779362-1&promotion_type=deal_of_the_day"></div><div><label for="category">Categoria</label><select id="category">${categoryOptions}</select></div><div><label for="limit">Máximo</label><select id="limit"><option>8</option><option selected>20</option><option>40</option><option>80</option></select></div><div><label>Regra</label><label class="check"><input id="coupons-only" type="checkbox"> Só com cupom</label></div></div><div class="filters" style="grid-template-columns:190px 1fr"><div><label for="min-discount">Desconto mínimo</label><select id="min-discount"><option value="0">Qualquer</option><option value="10">10% ou mais</option><option value="20" selected>20% ou mais</option><option value="30">30% ou mais</option><option value="40">40% ou mais</option></select></div><div class="actions"><button id="scan" class="primary">Buscar e ranquear ofertas</button></div></div><div class="monitor"><button id="monitor-toggle" class="secondary">Iniciar monitoramento</button><select id="monitor-interval"><option value="15">a cada 15 min</option><option value="30" selected>a cada 30 min</option><option value="60">a cada 1 hora</option></select><span id="monitor-note" class="hint">Funciona enquanto o coletor estiver aberto.</span></div><p class="hint">Escolha “Geral” para percorrer todas as ofertas do dia. Em cada cartão, “Dados + avaliações” abre preço, cupom, ficha técnica, histórico e opiniões com fotos.</p><div id="catalog-error" class="error" hidden></div></section><div class="catalog-layout"><aside class="category-rail"><h3>Categorias</h3><div class="category-links">${categoryButtons}</div></aside><div class="catalog-main"><div id="catalog-meta" class="catalog-meta">Faça uma busca para preencher o catálogo.</div><section id="catalog" class="catalog"><div class="empty">Nenhuma oferta carregada.</div></section></div></div></main><script>
 const token=${safeToken};const input=document.querySelector('#input'),button=document.querySelector('#collect'),error=document.querySelector('#error'),result=document.querySelector('#result');let last=null;
 const productDialog=document.createElement('dialog');productDialog.className='product-dialog';const closeProduct=document.createElement('button');closeProduct.className='dialog-close';closeProduct.type='button';closeProduct.setAttribute('aria-label','Fechar janela');closeProduct.textContent='×';result.replaceWith(productDialog);productDialog.append(closeProduct,result);const sendStrip=document.createElement('div');sendStrip.className='send-strip';sendStrip.innerHTML='<div><strong>Gostou desta oferta?</strong><span>Abra o painel com este produto pronto para escolher o grupo.</span></div><button type="button" class="primary">Enviar para meu grupo</button>';result.querySelector('.product').after(sendStrip);closeProduct.onclick=()=>productDialog.close();productDialog.onclick=event=>{if(event.target===productDialog)productDialog.close()};sendStrip.querySelector('button').onclick=()=>{const productUrl=last?.canonicalUrl||last?.url||input.value;navigator.clipboard?.writeText(productUrl);window.open('https://promozap-operacao-grupos.joseattax.chatgpt.site/?product='+encodeURIComponent(productUrl)+'#consultar-produtos','_blank','noopener')};const modalStyle=document.createElement('style');modalStyle.textContent='.product-dialog{width:min(1180px,calc(100vw - 24px));max-height:94vh;padding:0;border:0;border-radius:22px;background:#fff;color:#263746;box-shadow:0 30px 90px rgba(16,34,49,.28);overflow:auto}.product-dialog::backdrop{background:rgba(15,28,39,.65);backdrop-filter:blur(5px)}.product-dialog .result{display:block;margin:0;border:0;border-radius:0;background:#fff}.dialog-close{position:sticky;z-index:8;top:12px;float:right;margin:12px 12px -54px 0;width:42px;height:42px;padding:0;border-radius:999px;background:#edf2f5;color:#263746;font-size:30px;line-height:1}.send-strip{margin-top:18px;display:flex;gap:18px;align-items:center;justify-content:space-between;border:1px solid #d7e3ec;border-radius:16px;background:#eef8ff;padding:16px}.send-strip div{display:grid;gap:4px}.send-strip span{color:#667788;font-size:13px}.product-dialog .price,.product-dialog .detail,.product-dialog .attr,.product-dialog .review,.product-dialog .history-chart{background:#f8fafb;border-color:#dce4ea}.product-dialog .price strong,.product-dialog .current{color:#087bd3}.product-dialog .review p{color:#34495a}.product-dialog pre{background:#17232e;color:#b7f7c7}@media(max-width:620px){.send-strip{align-items:stretch;flex-direction:column}.send-strip button{width:100%}}';document.head.append(modalStyle);
-const catalogTheme=document.createElement('style');catalogTheme.textContent='body{background:#f4f6f8;color:#263746}.panel,.category-rail,.deal-card{background:#fff;border-color:#dce4ea;box-shadow:0 7px 25px rgba(31,54,76,.07)}input,select,.check{background:#fff;color:#263746;border-color:#cfd9e0}.secondary{background:#fff;color:#34495a;border-color:#cfd9e0}.category-link{color:#526778}.category-link:hover,.category-link.active{background:#eef8ff;color:#087bd3}.deal-card:hover{border-color:#8fc5ea}.current{color:#087bd3}.hint,.catalog-meta,.reasons{color:#6e7f8d}.badge{background:#e8f8ef;color:#138244}.badge.yellow{background:#087bd3;color:#fff}.badge.coupon{background:#fff1bf;color:#795d00}.logo,.primary{background:#087bd3;color:#fff}.primary:hover{background:#076bb7}';document.head.append(catalogTheme);
+const catalogTheme=document.createElement('style');catalogTheme.textContent=':root{color-scheme:light}body{background:#f4f6f8;color:#263746}.panel,.category-rail,.deal-card{background:#fff;border-color:#dce4ea;box-shadow:0 7px 25px rgba(31,54,76,.07)}label{color:#34495a!important}input,select,.check{background:#fff;color:#172b3b;border-color:#aebdca}.secondary{background:#fff;color:#253a4d;border-color:#b9c6d0}.category-link{color:#40576a}.category-link:hover,.category-link.active{background:#e4f3ff;color:#075f9f}.deal-card:hover{border-color:#78b9e7}.current{color:#087bd3}.hint,.catalog-meta,.reasons{color:#566b7c}.badge{background:#e8f8ef;color:#138244}.badge.yellow{background:#087bd3;color:#fff}.badge.coupon{background:#fff1bf;color:#795d00}.logo,.primary{background:#087bd3;color:#fff}.primary:hover{background:#076bb7}.status{background:transparent;border:0;border-left:4px solid #087bd3;border-radius:0;padding:2px 0 2px 10px;color:#263746;font-size:14px}.status .dot{display:none}.eyebrow{color:#0874c9}.catalog-panel h2,.category-rail h3{color:#1d3345}button:disabled{color:#fff;opacity:.58}';document.head.append(catalogTheme);const statusLabels=document.querySelectorAll('.status');if(statusLabels[0])statusLabels[0].textContent='Consulta individual';if(statusLabels[1])statusLabels[1].textContent='Explorar promoções';
 const money=(v,c='BRL')=>v==null?'—':new Intl.NumberFormat('pt-BR',{style:'currency',currency:c}).format(v);const esc=(v)=>String(v??'—').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 async function loadProduct(value,sourceButton=button){const previous=sourceButton.textContent;sourceButton.disabled=true;sourceButton.textContent='Lendo dados e avaliações...';error.hidden=true;try{const response=await fetch('/scrape',{method:'POST',headers:{'Content-Type':'application/json','X-Promozap-Local-Token':token},body:JSON.stringify({input:value})});const data=await response.json();if(!response.ok||!data.product?.ok)throw new Error(data.product?.userActionMessage||data.error||'Falha na coleta.');render(data.product);renderHistory(data.product);if(!productDialog.open)productDialog.showModal();productDialog.scrollTop=0}catch(e){error.textContent=e.message;error.hidden=false;error.scrollIntoView({behavior:'smooth',block:'center'})}finally{sourceButton.disabled=false;sourceButton.textContent=previous}}
 button.onclick=()=>loadProduct(input.value,button);
@@ -665,9 +701,9 @@ function renderHistory(p){const rows=(p.priceHistory||[]).filter(row=>Number.isF
 function render(p){last=p;const currency=p.currency||'BRL';document.querySelector('#image').src=p.imageUrl||'';document.querySelector('#item').textContent=[p.itemId,p.userProductId].filter(Boolean).join(' · ');document.querySelector('#discount').textContent=p.discountPercentage?p.discountPercentage+'% OFF':'Sem desconto informado';document.querySelector('#store').textContent=p.officialStore?'Loja oficial: '+p.officialStore:(p.seller||'Vendedor não informado');const couponBadge=document.querySelector('#coupon-badge');couponBadge.hidden=!p.coupon;couponBadge.textContent=p.coupon?(p.coupon.code?'Cupom '+p.coupon.code:p.coupon.text):'';document.querySelector('#title').textContent=p.title;const prices=[['No Pix',p.pixPrice],['Normal',p.standardPrice],['Anterior',p.originalPrice],['Com cupom',p.coupon?.price]];document.querySelector('#prices').innerHTML=prices.map(([l,v])=>'<div class="price"><small>'+l+'</small><strong>'+money(v,currency)+'</strong></div>').join('');const details=[['Benefício do cupom',p.coupon?.amountOff?money(p.coupon.amountOff):p.coupon?.text],['Compra mínima',p.coupon?.minimumPurchase?money(p.coupon.minimumPurchase):null],['Código',p.coupon?.code||(p.coupon?.automatic?'Automático/sem código visível':null)],['Parcelamento',p.installments?.text],['Estoque',p.stockText],['Vendidos',p.soldText],['Entrega',p.deliveryText],['Avaliação',p.ratingText],['Total de opiniões',p.reviewsTotal],['Capturado em',new Date(p.capturedAt).toLocaleString('pt-BR')]];document.querySelector('#details').innerHTML=details.map(([l,v])=>'<div class="detail"><small>'+esc(l)+'</small><div>'+esc(v)+'</div></div>').join('');document.querySelector('#attrs').innerHTML=(p.attributes||[]).map(a=>'<div class="attr"><small>'+esc(a.name)+'</small><div>'+esc(a.value_name)+'</div></div>').join('');const reviews=p.reviews||[];document.querySelector('#reviews-title').textContent=reviews.length?'10 primeiras avaliações encontradas ('+reviews.length+' exibidas)':'Avaliações';document.querySelector('#reviews').innerHTML=reviews.map(r=>'<article class="review"><div class="review-head"><span class="stars">'+('★'.repeat(Math.round(r.rating||0)))+('☆'.repeat(Math.max(0,5-Math.round(r.rating||0))))+'</span><span>'+esc([...new Set([r.country,r.date].filter(Boolean))].join(' · '))+'</span></div><p>'+esc(r.text||'Avaliação publicada somente com foto.')+'</p>'+(r.images?.length?'<div class="review-images">'+r.images.map(url=>'<a href="'+esc(url)+'" target="_blank" rel="noreferrer"><img loading="lazy" src="'+esc(url)+'" alt="Foto enviada nesta avaliação"></a>').join('')+'</div>':'')+(r.usefulCount?'<div class="hint">'+r.usefulCount+' pessoas acharam útil</div>':'')+'</article>').join('')||'<div class="empty">Este anúncio não exibiu avaliações públicas para o coletor.</div>';document.querySelector('#json').textContent=JSON.stringify(p,null,2);result.classList.add('show');result.scrollIntoView({behavior:'smooth',block:'start'})}
 document.querySelector('#copy').onclick=()=>last&&navigator.clipboard.writeText(JSON.stringify(last,null,2));
 const scanButton=document.querySelector('#scan'),catalogError=document.querySelector('#catalog-error'),catalog=document.querySelector('#catalog');let monitorTimer=null;
-async function runCatalog(silent=false){scanButton.disabled=true;scanButton.textContent='Lendo ofertas...';catalogError.hidden=true;if(!silent)catalog.innerHTML='<div class="empty">O Chrome está percorrendo as ofertas. Aguarde…</div>';try{const payload={url:document.querySelector('#deals-url').value,category:document.querySelector('#category').value,limit:Number(document.querySelector('#limit').value),minDiscount:Number(document.querySelector('#min-discount').value),couponsOnly:document.querySelector('#coupons-only').checked};const response=await fetch('/scan-deals',{method:'POST',headers:{'Content-Type':'application/json','X-Promozap-Local-Token':token},body:JSON.stringify(payload)});const data=await response.json();if(!response.ok||!data.ok)throw new Error(data.error||'Falha ao pesquisar ofertas.');renderCatalog(data)}catch(e){catalogError.textContent=e.message;catalogError.hidden=false;if(!silent)catalog.innerHTML='<div class="empty">Não foi possível concluir a busca.</div>'}finally{scanButton.disabled=false;scanButton.textContent='Buscar e ranquear ofertas'}}
+let catalogAbort=null,catalogRequestId=0;async function runCatalog(silent=false){if(catalogAbort)catalogAbort.abort();catalogAbort=new AbortController();const requestId=++catalogRequestId;scanButton.disabled=true;scanButton.textContent='Lendo ofertas...';catalogError.hidden=true;if(!silent)catalog.innerHTML='<div class="empty"><strong>Trocando de categoria…</strong><br>A busca anterior foi cancelada para carregar somente a seleção atual.</div>';try{const payload={url:document.querySelector('#deals-url').value,category:document.querySelector('#category').value,limit:Number(document.querySelector('#limit').value),minDiscount:Number(document.querySelector('#min-discount').value),couponsOnly:document.querySelector('#coupons-only').checked};const response=await fetch('/scan-deals',{method:'POST',headers:{'Content-Type':'application/json','X-Promozap-Local-Token':token},body:JSON.stringify(payload),signal:catalogAbort.signal});const data=await response.json();if(requestId!==catalogRequestId)return;if(!response.ok||!data.ok)throw new Error(data.error||'Falha ao pesquisar ofertas.');renderCatalog(data)}catch(e){if(e.name==='AbortError'||requestId!==catalogRequestId)return;catalogError.textContent=e.message;catalogError.hidden=false;if(!silent)catalog.innerHTML='<div class="empty">Não foi possível concluir a busca.</div>'}finally{if(requestId===catalogRequestId){catalogAbort=null;scanButton.disabled=false;scanButton.textContent='Buscar e ranquear ofertas'}}}
 function renderCatalog(data){document.querySelector('#catalog-meta').textContent=(data.products?.length||0)+' ofertas em '+data.category+' · atualizado '+new Date(data.capturedAt).toLocaleString('pt-BR')+(data.totalText?' · '+data.totalText:'');catalog.innerHTML=(data.products||[]).map((p,i)=>'<article class="deal-card"><div class="deal-image"><img loading="lazy" src="'+esc(p.imageUrl||'')+'" alt=""></div><div class="deal-body"><div class="badges"><span class="badge yellow">#'+(i+1)+' · '+p.dealScore+' pts</span>'+(p.coupon?'<span class="badge coupon">CUPOM</span>':'')+'</div><h3>'+esc(p.title)+'</h3><div><span class="old">'+money(p.originalPrice)+'</span><div class="current">'+money(p.effectivePrice)+'</div></div><div class="reasons">'+esc((p.scoreReasons||[]).join(' · '))+'</div>'+(p.coupon?'<div class="reasons">🏷️ '+esc(p.coupon.text)+(p.coupon.amountOff?' — economiza '+money(p.coupon.amountOff):'')+'</div>':'')+'<div class="deal-actions"><button class="primary detail-product" data-url="'+esc(p.url)+'">Dados + avaliações</button><a class="button secondary" href="'+esc(p.url)+'" target="_blank" rel="noreferrer">Abrir página</a></div></div></article>').join('')||'<div class="empty">Nenhum produto passou pelos filtros.</div>';catalog.querySelectorAll('.detail-product').forEach(btn=>btn.onclick=()=>loadProduct(btn.dataset.url,btn))}
-document.querySelectorAll('.category-link').forEach(categoryButton=>categoryButton.onclick=()=>{document.querySelector('#category').value=categoryButton.dataset.category;document.querySelectorAll('.category-link').forEach(item=>item.classList.toggle('active',item===categoryButton));runCatalog(false)});document.querySelector('#category').onchange=event=>{document.querySelectorAll('.category-link').forEach(item=>item.classList.toggle('active',item.dataset.category===event.target.value))};scanButton.onclick=()=>runCatalog(false);const monitorButton=document.querySelector('#monitor-toggle');monitorButton.onclick=()=>{if(monitorTimer){clearInterval(monitorTimer);monitorTimer=null;monitorButton.textContent='Iniciar monitoramento';document.querySelector('#monitor-note').textContent='Monitoramento parado.';return}const minutes=Number(document.querySelector('#monitor-interval').value);runCatalog(false);monitorTimer=setInterval(()=>runCatalog(true),minutes*60000);monitorButton.textContent='Parar monitoramento';document.querySelector('#monitor-note').textContent='Monitorando a cada '+minutes+' min enquanto esta janela estiver aberta.'};
+document.querySelectorAll('.category-link').forEach(categoryButton=>categoryButton.onclick=()=>{document.querySelector('#category').value=categoryButton.dataset.category;document.querySelectorAll('.category-link').forEach(item=>item.classList.toggle('active',item===categoryButton));runCatalog(false)});document.querySelector('#category').onchange=event=>{document.querySelectorAll('.category-link').forEach(item=>item.classList.toggle('active',item.dataset.category===event.target.value));runCatalog(false)};scanButton.onclick=()=>runCatalog(false);const monitorButton=document.querySelector('#monitor-toggle');monitorButton.onclick=()=>{if(monitorTimer){clearInterval(monitorTimer);monitorTimer=null;monitorButton.textContent='Iniciar monitoramento';document.querySelector('#monitor-note').textContent='Monitoramento parado.';return}const minutes=Number(document.querySelector('#monitor-interval').value);runCatalog(false);monitorTimer=setInterval(()=>runCatalog(true),minutes*60000);monitorButton.textContent='Parar monitoramento';document.querySelector('#monitor-note').textContent='Monitorando a cada '+minutes+' min enquanto esta janela estiver aberta.'};
 </script></body></html>`;
 }
 
@@ -698,8 +734,8 @@ const server = createServer(async (request, response) => {
   }
   try {
     const body = JSON.parse(raw || "{}");
-    const task = scrapeQueue.then(() => isDealsScan ? scanDeals(body) : scrapeProduct(body.input));
-    scrapeQueue = task.catch(() => undefined);
+    const task = isDealsScan ? scanDeals(body) : scrapeQueue.then(() => scrapeProduct(body.input));
+    if (!isDealsScan) scrapeQueue = task.catch(() => undefined);
     const result = await task;
     if (isDealsScan) respond(response, result.ok ? 200 : 409, result, headers);
     else respond(response, result.ok ? 200 : 409, { ok: result.ok, product: result }, headers);
