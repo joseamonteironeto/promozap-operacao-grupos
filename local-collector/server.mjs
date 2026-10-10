@@ -367,5 +367,13 @@ server.listen(collectorPort, "127.0.0.1", () => {
   console.log(`Endereço: http://127.0.0.1:${collectorPort}`);
   console.log(`Token local: ${localToken}`);
   console.log("Cole esse token na seção Coletor pelo navegador do painel.\n");
+  if (process.platform === "win32" && process.env.PROMOZAP_NO_AUTO_OPEN !== "1") {
+    const opener = spawn("cmd.exe", ["/d", "/c", "start", "", `http://127.0.0.1:${collectorPort}`], {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    opener.unref();
+  }
 });
 
