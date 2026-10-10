@@ -169,3 +169,38 @@ button, input, select { font: inherit; }
 .promozap-light .promozap-menu-item { color: #17221b !important; }
 .promozap-light .promozap-menu-item:hover { background-color: #e7f1ea !important; color: #07140b !important; }
 .promozap-light .promozap-menu-active { background-color: #bdf4cc !important; color: #07140b !important; }
+
+/* Catálogo com a mesma hierarquia clara dos grandes agregadores de ofertas,
+   preservando a identidade e as funções próprias do Promozap. */
+.promobit-catalog [class*="bg-[#0b100d]"],
+.promobit-catalog [class*="bg-[#080c09]"],
+.promobit-catalog [class*="bg-[#0b1710]"],
+.promobit-catalog [class*="bg-[#0d1b12]"],
+.promobit-catalog [class*="bg-[#111813]"] { background-color: #fff !important; }
+.promobit-catalog [class*="border-[#27322b]"],
+.promobit-catalog [class*="border-[#31543b]"],
+.promobit-catalog [class*="border-[#34423a]"] { border-color: #dce4e9 !important; }
+.promobit-catalog input,
+.promobit-catalog textarea,
+.promobit-catalog select { background-color: #fff !important; border-color: #cfd9e0 !important; color: #243447 !important; }
+.promobit-catalog [class*="text-[#62ef8b]"] { color: #087bd3 !important; }
+.promobit-catalog [class*="text-[#94a69b]"],
+.promobit-catalog [class*="text-[#718079]"] { color: #6c7c89 !important; }
+.promobit-catalog [class*="text-white"] { color: #243447 !important; }
+.promobit-catalog article,
+.promobit-catalog [data-slot="card"] { box-shadow: 0 7px 25px rgb(31 54 76 / 8%); }
+.product-detail-modal [class*="bg-[#0d1b12]"],
+.product-detail-modal [class*="bg-[#111813]"],
+.product-detail-modal [class*="bg-[#0d1310]"],
+.product-detail-modal [class*="bg-[#080c09]"],
+.product-detail-modal [class*="bg-[#0b1710]"],
+.product-detail-modal [class*="bg-[#070b08]"] { background-color: #f8fafb !important; }
+.product-detail-modal [class*="border-[#27322b]"],
+.product-detail-modal [class*="border-[#31543b]"],
+.product-detail-modal [class*="border-[#34423a]"],
+.product-detail-modal [class*="border-[#244b31]"] { border-color: #dce4e9 !important; }
+.product-detail-modal [class*="text-[#62ef8b]"],
+.product-detail-modal [class*="text-[#8af3a5]"] { color: #087bd3 !important; }
+.product-detail-modal [class*="text-white"] { color: #243447 !important; }
+.product-detail-modal textarea,
+.product-detail-modal select { background: #fff !important; border-color: #cfd9e0 !important; color: #243447 !important; }

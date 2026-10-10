@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import {
   Activity,
@@ -22,7 +22,9 @@ import {
   Moon,
   MessageCircleMore,
   PackageSearch,
+  LayoutTemplate,
   Plus,
+  Radar,
   RefreshCw,
   Search,
   Send,
@@ -198,6 +200,39 @@ type CatalogItem = {
   reviews?: Array<{ position?: number; rating?: number | null; country?: string | null; date?: string | null; text?: string | null; images?: string[]; usefulCount?: number }>;
   reviewsTotal?: number | null;
 };
+
+type MonitoredDeal = CatalogItem & {
+  dealScore?: number;
+  effectivePrice?: number | null;
+  scoreReasons?: string[];
+  detectedAt?: string;
+};
+
+const defaultOfferTemplate = `🔥 *{{titulo}}*
+
+{{linha_preco_anterior}}✅ *Por: {{preco}}{{linha_desconto}}*
+{{linha_cupom}}{{linha_frete}}
+🛒 Garanta aqui: {{link}}`;
+
+const offerTemplateVariables = [
+  ["{{titulo}}", "Nome do produto"],
+  ["{{preco}}", "Preço atual"],
+  ["{{preco_anterior}}", "Preço anterior"],
+  ["{{desconto}}", "Percentual de desconto"],
+  ["{{economia}}", "Economia em reais"],
+  ["{{cupom}}", "Código ou descrição do cupom"],
+  ["{{link}}", "Link convertido da oferta"],
+  ["{{loja}}", "Amazon ou Mercado Livre"],
+  ["{{frete}}", "Frete grátis / envio Full"],
+  ["{{vendedor}}", "Nome do vendedor"],
+  ["{{marca}}", "Marca"],
+  ["{{categoria}}", "Categoria"],
+  ["{{id_produto}}", "ID do produto"],
+  ["{{linha_preco_anterior}}", "Linha pronta, ocultada quando não houver preço anterior"],
+  ["{{linha_desconto}}", "Trecho pronto, ocultado quando não houver desconto"],
+  ["{{linha_cupom}}", "Linha pronta, ocultada quando não houver cupom"],
+  ["{{linha_frete}}", "Linha pronta, ocultada quando não houver benefício de entrega"],
+] as const;
 
 type CatalogSearchResponse = {
   store?: "amazon" | "mercadolivre";
@@ -470,7 +505,7 @@ function PriceHistoryPanel({ item }: { item: CatalogItem }) {
 
 export default function Dashboard() {
   const [activeTab, setActiveTab] = useState("groups");
-  const [theme, setTheme] = useState<"dark" | "light">("dark");
+  const [theme, setTheme] = useState<"dark" | "light">("light");
   const [groups, setGroups] = useState<Group[]>([]);
   const [configs, setConfigs] = useState<Record<string, GroupConfig>>({});
   const [affiliate, setAffiliate] = useState<AffiliateSettings>(emptyAffiliate);
@@ -541,6 +576,18 @@ export default function Dashboard() {
   const [offerIncludeImage, setOfferIncludeImage] = useState(true);
   const [offerPreparing, setOfferPreparing] = useState(false);
   const [offerSending, setOfferSending] = useState(false);
+  const [offerTemplate, setOfferTemplate] = useState(defaultOfferTemplate);
+  const [templateSavedAt, setTemplateSavedAt] = useState<string | null>(null);
+  const [monitoringActive, setMonitoringActive] = useState(false);
+  const [monitoringCategory, setMonitoringCategory] = useState("Geral");
+  const [monitoringIntervalMinutes, setMonitoringIntervalMinutes] = useState("2");
+  const [monitoringMinDiscount, setMonitoringMinDiscount] = useState("20");
+  const [monitoringCouponsOnly, setMonitoringCouponsOnly] = useState(false);
+  const [monitoringLoading, setMonitoringLoading] = useState(false);
+  const [monitoringError, setMonitoringError] = useState("");
+  const [monitoringDeals, setMonitoringDeals] = useState<MonitoredDeal[]>([]);
+  const [monitoringLastScan, setMonitoringLastScan] = useState<string | null>(null);
+  const monitoringSeen = useRef(new Set<string>());
   const [catalogCredentials, setCatalogCredentials] = useState({ amazonConfigured: false, mercadoLivreConfigured: false, mercadoLivreAppConfigured: false, mercadoLivreExpiresAt: null as string | null, mercadoLivreUserId: null as string | null });
   const [amazonClientId, setAmazonClientId] = useState("");
   const [amazonClientSecret, setAmazonClientSecret] = useState("");
@@ -622,8 +669,10 @@ export default function Dashboard() {
   useEffect(() => {
     const savedUrl = window.localStorage.getItem("promozap.localCollectorUrl");
     const savedToken = window.localStorage.getItem("promozap.localCollectorToken");
+    const savedTemplate = window.localStorage.getItem("promozap.offerTemplate.v1");
     if (savedUrl) setLocalCollectorUrl(savedUrl);
     if (savedToken) setLocalCollectorToken(savedToken);
+    if (savedTemplate) setOfferTemplate(savedTemplate);
   }, []);
 
   useEffect(() => {
@@ -1132,11 +1181,111 @@ export default function Dashboard() {
   }
 
   function composeOfferMessage(item: CatalogItem, link = item.url || "") {
-    const currentPrice = item.price != null ? formatMoney(item.price, item.currency || "BRL") : "Consulte o preço no link";
-    const original = item.originalPrice && item.price && item.originalPrice > item.price ? `De: ~${formatMoney(item.originalPrice, item.currency || "BRL")}~\n` : "";
-    const discount = item.discountPercentage ? ` (${item.discountPercentage}% OFF)` : "";
+    const currency = item.currency || "BRL";
+    const currentPrice = item.price != null ? formatMoney(item.price, currency) : "Consulte o preço no link";
+    const hasPreviousPrice = Boolean(item.originalPrice && item.price && item.originalPrice > item.price);
+    const previousPrice = hasPreviousPrice ? formatMoney(item.originalPrice, currency) : "";
+    const savings = hasPreviousPrice ? formatMoney((item.originalPrice || 0) - (item.price || 0), currency) : "";
     const shipping = [item.freeShipping ? "Frete grátis" : "", item.full ? "Envio Full" : ""].filter(Boolean).join(" · ");
-    return `🔥 *${item.title}*\n\n${original}✅ *Por: ${currentPrice}${discount}*${shipping ? `\n🚚 ${shipping}` : ""}\n\n🛒 Garanta aqui: ${link}`.trim();
+    const coupon = item.coupon && typeof item.coupon === "object"
+      ? String(item.coupon.code || item.coupon.text || item.coupon.label || "Cupom disponível")
+      : "";
+    const store = catalogSearchStore === "amazon" ? "Amazon" : "Mercado Livre";
+    const values: Record<string, string> = {
+      "{{titulo}}": item.title || "",
+      "{{preco}}": currentPrice,
+      "{{preco_anterior}}": previousPrice,
+      "{{desconto}}": item.discountPercentage ? `${item.discountPercentage}%` : "",
+      "{{economia}}": savings,
+      "{{cupom}}": coupon,
+      "{{link}}": link,
+      "{{loja}}": store,
+      "{{frete}}": shipping,
+      "{{vendedor}}": item.seller == null ? "" : String(item.seller),
+      "{{marca}}": item.brand || "",
+      "{{categoria}}": item.categoryName || item.categoryId || "",
+      "{{id_produto}}": item.itemId || item.catalogProductId || item.id,
+      "{{linha_preco_anterior}}": hasPreviousPrice ? `De: ~${previousPrice}~\n` : "",
+      "{{linha_desconto}}": item.discountPercentage ? ` (${item.discountPercentage}% OFF)` : "",
+      "{{linha_cupom}}": coupon ? `🏷️ Cupom: *${coupon}*\n` : "",
+      "{{linha_frete}}": shipping ? `🚚 ${shipping}\n` : "",
+    };
+    return Object.entries(values).reduce((message, [variable, value]) => message.split(variable).join(value), offerTemplate)
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  }
+
+  function saveOfferTemplate() {
+    window.localStorage.setItem("promozap.offerTemplate.v1", offerTemplate);
+    setTemplateSavedAt(new Date().toISOString());
+    toast.success("Modelo de mensagem salvo neste navegador.");
+  }
+
+  async function scanMonitoredDeals() {
+    if (!localCollectorToken.trim()) {
+      setMonitoringActive(false);
+      setMonitoringError("Cole primeiro o token do coletor local em Consultar produtos.");
+      return;
+    }
+    setMonitoringLoading(true);
+    setMonitoringError("");
+    try {
+      const response = await fetch(`${localCollectorUrl.replace(/\/$/, "")}/scan-deals`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Promozap-Local-Token": localCollectorToken.trim() },
+        body: JSON.stringify({
+          url: "https://www.mercadolivre.com.br/ofertas?container_id=MLB779362-1&promotion_type=deal_of_the_day",
+          category: monitoringCategory,
+          limit: 40,
+          minDiscount: Number(monitoringMinDiscount),
+          couponsOnly: monitoringCouponsOnly,
+        }),
+      });
+      const data = await response.json() as { ok?: boolean; products?: Array<Record<string, unknown>>; capturedAt?: string; error?: string };
+      if (!response.ok || !data.ok) throw new Error(data.error || "O coletor não conseguiu ler as ofertas.");
+      const now = data.capturedAt || new Date().toISOString();
+      const next = (data.products || []).map((raw) => {
+        const url = String(raw.url || "");
+        const id = String(raw.itemId || raw.id || url);
+        return {
+          id,
+          itemId: raw.itemId ? String(raw.itemId) : null,
+          title: String(raw.title || "Oferta Mercado Livre"),
+          imageUrl: raw.imageUrl ? String(raw.imageUrl) : null,
+          url,
+          price: Number(raw.effectivePrice || raw.price) || null,
+          effectivePrice: Number(raw.effectivePrice || raw.price) || null,
+          originalPrice: Number(raw.originalPrice) || null,
+          currency: "BRL",
+          discountPercentage: Number(raw.discountPercentage) || 0,
+          coupon: raw.coupon && typeof raw.coupon === "object" ? raw.coupon as Record<string, unknown> : null,
+          dealScore: Number(raw.dealScore) || 0,
+          scoreReasons: Array.isArray(raw.scoreReasons) ? raw.scoreReasons.map(String) : [],
+          priceSource: "marketplace_page" as const,
+          detectedAt: now,
+          freeShipping: Boolean(raw.freeShipping),
+        } satisfies MonitoredDeal;
+      });
+      const fresh = next.filter((item) => !monitoringSeen.current.has(item.id));
+      next.forEach((item) => monitoringSeen.current.add(item.id));
+      setMonitoringDeals((current) => [...fresh, ...current.filter((item) => !fresh.some((freshItem) => freshItem.id === item.id))].slice(0, 120));
+      setMonitoringLastScan(now);
+      setLocalCollectorConnected(true);
+      if (fresh.length && monitoringSeen.current.size > fresh.length) toast.success(`${fresh.length} nova(s) oferta(s) detectada(s).`);
+    } catch (caught) {
+      setMonitoringError(caught instanceof Error ? caught.message : "Não foi possível executar o monitoramento.");
+      setLocalCollectorConnected(false);
+    } finally {
+      setMonitoringLoading(false);
+    }
+  }
+
+  function openMonitoredDeal(item: MonitoredDeal) {
+    setCatalogSearchStore("mercadolivre");
+    setSelectedCatalogItem(item);
+    setOfferDestination((current) => current || destinationGroups[0]?.JID || "");
+    setOfferIncludeImage(Boolean(item.imageUrl));
+    setOfferMessage(composeOfferMessage(item));
   }
 
   async function prepareCatalogOffer(item: CatalogItem) {
@@ -1284,14 +1433,29 @@ export default function Dashboard() {
   }, [activeTab]);
 
   useEffect(() => {
-    if (activeTab === "discovery") {
+    if (activeTab === "discovery" || activeTab === "monitoring") {
       void loadCatalogCredentialStatus();
       if (!mercadoLivreCategories.length) void loadMercadoLivreCategories();
     }
   }, [activeTab]);
 
   useEffect(() => {
+    if (!monitoringActive) return;
+    void scanMonitoredDeals();
+    const timer = window.setInterval(() => void scanMonitoredDeals(), Math.max(1, Number(monitoringIntervalMinutes)) * 60_000);
+    return () => window.clearInterval(timer);
+  }, [monitoringActive, monitoringIntervalMinutes, monitoringCategory, monitoringMinDiscount, monitoringCouponsOnly, localCollectorUrl, localCollectorToken]);
+
+  useEffect(() => {
     const params = new URLSearchParams(window.location.search);
+    const product = params.get("product");
+    if (product) {
+      setActiveTab("discovery");
+      setLocalCollectorInput(product);
+      window.history.replaceState({}, "", `${window.location.pathname}#consultar-produtos`);
+      toast.info("Produto recebido do coletor. Clique em “Abrir Chrome e extrair dados” para atualizar e enviar.");
+      return;
+    }
     const oauth = params.get("ml_oauth");
     if (!oauth) return;
     setActiveTab("discovery");
@@ -1350,6 +1514,8 @@ export default function Dashboard() {
     products: ["Produtos encontrados", "Acompanhe cada link identificado, convertido e enviado."],
     catalog: ["Dados dos produtos", "Veja tudo o que foi extraído das ofertas enviadas da Amazon e do Mercado Livre."],
     discovery: ["Consultar produtos", "Pesquise recomendações, preços e filtros nos catálogos oficiais."],
+    monitoring: ["Radar de ofertas", "Monitore novas ofertas do dia e destaque quedas de preço relevantes."],
+    templates: ["Layout das mensagens", "Monte o texto das ofertas com variáveis preenchidas automaticamente."],
     ranking: ["Ranking Mercado Livre", "Analise produtos do catálogo oficial e compare automaticamente as ofertas vencedoras."],
     affiliates: ["Afiliados", "Defina como os links encontrados serão convertidos."],
     amazon: ["Gerador Amazon", "Cole links longos ou encurtados e gere versões limpas com seu Tracking ID."],
@@ -1373,6 +1539,8 @@ export default function Dashboard() {
                 ["products", "Produtos", PackageSearch],
                 ["catalog", "Dados dos produtos", Database],
                 ["discovery", "Consultar produtos", Search],
+                ["monitoring", "Radar de ofertas", Radar],
+                ["templates", "Layout das mensagens", LayoutTemplate],
                 ["ranking", "Ranking Mercado Livre", Trophy],
                 ["affiliates", "Afiliados", Link2],
                 ["amazon", "Gerador Amazon", ShoppingBag],
@@ -1432,6 +1600,8 @@ export default function Dashboard() {
               <TabsTrigger value="products" className="h-10 min-w-28 rounded-lg px-4">Produtos</TabsTrigger>
               <TabsTrigger value="catalog" className="h-10 min-w-40 rounded-lg px-4">Dados dos produtos</TabsTrigger>
               <TabsTrigger value="discovery" className="h-10 min-w-40 rounded-lg px-4">Consultar produtos</TabsTrigger>
+              <TabsTrigger value="monitoring" className="h-10 min-w-36 rounded-lg px-4">Radar ao vivo</TabsTrigger>
+              <TabsTrigger value="templates" className="h-10 min-w-40 rounded-lg px-4">Layout das mensagens</TabsTrigger>
               <TabsTrigger value="ranking" className="h-10 min-w-40 rounded-lg px-4 data-[state=active]:bg-[#ffe600] data-[state=active]:text-[#231f00]">Ranking ML</TabsTrigger>
               <TabsTrigger value="affiliates" className="h-10 min-w-28 rounded-lg px-4">Afiliados</TabsTrigger>
               <TabsTrigger value="amazon" className="h-10 min-w-36 rounded-lg px-4 data-[state=active]:bg-[#ff9900] data-[state=active]:text-[#111820]">Gerador Amazon</TabsTrigger>
@@ -1696,7 +1866,7 @@ export default function Dashboard() {
               </div>
             </TabsContent>
 
-            <TabsContent value="discovery" id="consultar-produtos">
+            <TabsContent value="discovery" id="consultar-produtos" className="promobit-catalog rounded-3xl bg-[#f4f6f8] p-3 text-[#243447] sm:p-5">
               <Card className="mb-5 overflow-hidden border-[#31543b] bg-[#0b100d] shadow-none">
                 <CardHeader className="border-b border-[#27322b] bg-[linear-gradient(110deg,rgba(36,199,90,.12),transparent_62%)]">
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -1766,7 +1936,7 @@ export default function Dashboard() {
                 </div>
               </div>
               <Dialog open={Boolean(selectedCatalogItem)} onOpenChange={(open) => { if (!open) setSelectedCatalogItem(null); }}>
-                <DialogContent className="max-h-[94vh] overflow-y-auto border-[#34423a] bg-[#090d0a] text-white sm:max-w-5xl">
+                <DialogContent className="product-detail-modal max-h-[94vh] overflow-y-auto border-[#d9e1e7] bg-white text-[#243447] sm:max-w-5xl">
                   {selectedCatalogItem && <>
                     <DialogHeader><div className="mb-2 flex flex-wrap gap-2"><Badge className="bg-[#ffe600] text-[#231f00]">{selectedCatalogItem.source === "item" ? "Anúncio oficial" : selectedCatalogItem.source === "best_seller" ? "Mais vendido" : selectedCatalogItem.source === "buy_box" ? "Oferta vencedora" : "Produto"}</Badge>{selectedCatalogItem.discountPercentage ? <Badge className="bg-[#24c75a] text-[#04140a]">{selectedCatalogItem.discountPercentage}% OFF</Badge> : null}{selectedCatalogItem.full && <Badge className="bg-[#14233a] text-[#9bc4ff]">Full</Badge>}</div><DialogTitle className="pr-7 text-xl leading-7">{selectedCatalogItem.title}</DialogTitle><DialogDescription>Revise os dados e personalize exatamente como a oferta será enviada.</DialogDescription></DialogHeader>
                     <div className="grid gap-6 lg:grid-cols-[minmax(0,1.15fr)_minmax(320px,.85fr)]">
@@ -1783,6 +1953,35 @@ export default function Dashboard() {
                   </>}
                 </DialogContent>
               </Dialog>
+            </TabsContent>
+
+            <TabsContent value="monitoring" id="radar-de-ofertas">
+              <div className="space-y-5 rounded-3xl bg-[#f4f6f8] p-4 text-[#243447] sm:p-6">
+                <section className="overflow-hidden rounded-2xl border border-[#dfe5eb] bg-white shadow-[0_8px_30px_rgba(31,54,76,.08)]">
+                  <div className="border-b border-[#e8edf1] bg-[linear-gradient(110deg,#eef8ff,#fff_58%)] p-5 sm:p-6">
+                    <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between"><div><div className="mb-2 flex items-center gap-2 text-sm font-extrabold text-[#0874c9]"><Radar className="size-5" /> MONITORAMENTO EM TEMPO QUASE REAL</div><h2 className="text-2xl font-black text-[#1b2b3a]">Novas ofertas do dia</h2><p className="mt-2 max-w-3xl text-sm leading-6 text-[#667788]">O coletor abre a vitrine pública do Mercado Livre em intervalos regulares, compara IDs já vistos e destaca somente novidades que atendem aos seus filtros.</p></div><div className={`rounded-full px-4 py-2 text-sm font-bold ${monitoringActive ? "bg-[#e8f8ef] text-[#138244]" : "bg-[#edf1f4] text-[#687785]"}`}>{monitoringActive ? "● Radar ativo" : "○ Radar pausado"}</div></div>
+                  </div>
+                  <div className="grid gap-3 p-5 md:grid-cols-2 xl:grid-cols-5">
+                    <label className="space-y-2 text-sm font-bold">Categoria<NativeSelect value={monitoringCategory} onChange={(event) => setMonitoringCategory(event.target.value)} className="border-[#d8e0e6] bg-white text-[#253545]"><NativeSelectOption value="Geral">Geral</NativeSelectOption>{mercadoLivreCategories.map((category) => <NativeSelectOption key={category.id} value={category.name}>{category.name}</NativeSelectOption>)}</NativeSelect></label>
+                    <label className="space-y-2 text-sm font-bold">Desconto mínimo<NativeSelect value={monitoringMinDiscount} onChange={(event) => setMonitoringMinDiscount(event.target.value)} className="border-[#d8e0e6] bg-white text-[#253545]"><NativeSelectOption value="0">Qualquer</NativeSelectOption><NativeSelectOption value="10">10% ou mais</NativeSelectOption><NativeSelectOption value="20">20% ou mais</NativeSelectOption><NativeSelectOption value="30">30% ou mais</NativeSelectOption><NativeSelectOption value="40">40% ou mais</NativeSelectOption></NativeSelect></label>
+                    <label className="space-y-2 text-sm font-bold">Atualizar a cada<NativeSelect value={monitoringIntervalMinutes} onChange={(event) => setMonitoringIntervalMinutes(event.target.value)} className="border-[#d8e0e6] bg-white text-[#253545]"><NativeSelectOption value="1">1 minuto</NativeSelectOption><NativeSelectOption value="2">2 minutos</NativeSelectOption><NativeSelectOption value="5">5 minutos</NativeSelectOption><NativeSelectOption value="10">10 minutos</NativeSelectOption></NativeSelect></label>
+                    <label className="flex h-[42px] items-center justify-between self-end rounded-lg border border-[#d8e0e6] bg-[#f9fbfc] px-3 text-sm font-bold"><span>Só com cupom</span><Switch checked={monitoringCouponsOnly} onCheckedChange={setMonitoringCouponsOnly} /></label>
+                    <Button onClick={() => setMonitoringActive((value) => !value)} className={`h-[42px] self-end font-extrabold ${monitoringActive ? "bg-[#263746] text-white hover:bg-[#34495a]" : "bg-[#087bd3] text-white hover:bg-[#076bb7]"}`}>{monitoringLoading ? <LoaderCircle className="animate-spin" /> : <Radar />} {monitoringActive ? "Pausar radar" : "Iniciar radar"}</Button>
+                  </div>
+                </section>
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between"><div><h3 className="text-xl font-black">Ofertas detectadas</h3><p className="mt-1 text-sm text-[#6d7d8a]">Clique no produto para abrir a janela completa e enviar ao seu grupo.</p></div><p className="text-xs font-semibold text-[#758592]">{monitoringLastScan ? `Última leitura: ${new Date(monitoringLastScan).toLocaleString("pt-BR")}` : "Aguardando a primeira leitura"}</p></div>
+                {monitoringError && <div className="rounded-xl border border-[#f1c8c8] bg-[#fff2f2] p-4 text-sm text-[#a13b3b]">{monitoringError}</div>}
+                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{monitoringDeals.map((item) => <button key={item.id} type="button" onClick={() => openMonitoredDeal(item)} className="group overflow-hidden rounded-2xl border border-[#dce3e8] bg-white text-left shadow-[0_6px_22px_rgba(31,54,76,.07)] transition hover:-translate-y-1 hover:border-[#8fc5ea] hover:shadow-[0_14px_32px_rgba(31,54,76,.14)]"><div className="relative aspect-[4/3] bg-white p-4">{item.imageUrl ? <img src={item.imageUrl} alt={item.title} className="h-full w-full object-contain transition group-hover:scale-[1.025]" /> : <div className="grid h-full place-items-center"><ShoppingBag className="size-10 text-[#9ba8b3]" /></div>}<div className="absolute left-3 top-3 rounded-full bg-[#12a55c] px-3 py-1 text-xs font-black text-white">{item.discountPercentage ? `-${item.discountPercentage}%` : `${item.dealScore || 0} pts`}</div></div><div className="space-y-3 border-t border-[#edf1f4] p-4"><h4 className="line-clamp-3 min-h-[3.75rem] text-sm font-bold leading-5 text-[#263746]">{item.title}</h4><div>{item.originalPrice && item.originalPrice > (item.price || 0) ? <p className="text-xs text-[#8b98a3] line-through">{formatMoney(item.originalPrice)}</p> : null}<p className="text-2xl font-black text-[#087bd3]">{formatMoney(item.price)}</p></div><div className="flex flex-wrap gap-1.5">{item.coupon && <span className="rounded-md bg-[#fff2c8] px-2 py-1 text-[11px] font-bold text-[#826600]">CUPOM</span>}{item.scoreReasons?.slice(0, 2).map((reason) => <span key={reason} className="rounded-md bg-[#eef2f5] px-2 py-1 text-[11px] text-[#617180]">{reason}</span>)}</div><p className="text-xs font-extrabold text-[#087bd3]">Ver oferta e enviar →</p></div></button>)}</div>
+                {!monitoringDeals.length && <div className="rounded-2xl border border-dashed border-[#cbd5dc] bg-white p-12 text-center"><Radar className="mx-auto mb-3 size-10 text-[#97a8b5]" /><p className="font-bold">Nenhuma leitura feita ainda</p><p className="mt-1 text-sm text-[#71808d]">Ligue o coletor local e clique em “Iniciar radar”.</p></div>}
+                <p className="rounded-xl border border-[#dbe6ee] bg-[#eef7fd] p-4 text-xs leading-5 text-[#4f6575]"><strong>Limite técnico:</strong> isto é uma varredura periódica, não um webhook do Mercado Livre. Ela funciona enquanto o coletor e esta página estiverem abertos. Intervalos muito curtos podem acionar validações do marketplace; 2 a 5 minutos é o uso mais seguro.</p>
+              </div>
+            </TabsContent>
+
+            <TabsContent value="templates" id="layout-das-mensagens">
+              <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
+                <Card className="border-[#dce4e9] bg-white text-[#243447] shadow-[0_10px_35px_rgba(31,54,76,.08)]"><CardHeader><CardTitle className="flex items-center gap-2 text-xl"><LayoutTemplate className="size-5 text-[#087bd3]" /> Editor do layout</CardTitle><CardDescription>Esse modelo é aplicado ao preparar qualquer produto no catálogo ou no radar.</CardDescription></CardHeader><CardContent className="space-y-4"><Textarea value={offerTemplate} onChange={(event) => setOfferTemplate(event.target.value)} rows={16} className="min-h-[390px] border-[#d8e0e6] bg-[#fbfcfd] font-mono text-sm leading-6 text-[#263746]" /><div className="flex flex-col gap-2 sm:flex-row"><Button onClick={saveOfferTemplate} className="bg-[#087bd3] font-extrabold text-white hover:bg-[#076bb7]"><Check /> Salvar modelo</Button><Button variant="outline" onClick={() => setOfferTemplate(defaultOfferTemplate)} className="border-[#cfd8df] bg-white text-[#263746]"><RefreshCw /> Restaurar padrão</Button></div>{templateSavedAt && <p className="text-xs text-[#6e7e8b]">Salvo em {new Date(templateSavedAt).toLocaleString("pt-BR")}.</p>}</CardContent></Card>
+                <div className="space-y-5"><Card className="border-[#dce4e9] bg-white text-[#243447] shadow-none"><CardHeader><CardTitle className="text-base">Variáveis disponíveis</CardTitle><CardDescription>Clique em uma variável para copiá-la.</CardDescription></CardHeader><CardContent className="space-y-2">{offerTemplateVariables.map(([variable, description]) => <button key={variable} type="button" onClick={() => { void navigator.clipboard.writeText(variable); toast.success(`${variable} copiada.`); }} className="w-full rounded-xl border border-[#e0e6eb] bg-[#f8fafb] p-3 text-left hover:border-[#8fc5ea] hover:bg-[#f1f8fd]"><code className="text-xs font-black text-[#0874c9]">{variable}</code><p className="mt-1 text-xs leading-5 text-[#6d7c89]">{description}</p></button>)}</CardContent></Card><Card className="border-[#dce4e9] bg-[#f4f9fd] text-[#243447] shadow-none"><CardHeader><CardTitle className="text-base">Como os campos opcionais funcionam</CardTitle></CardHeader><CardContent className="text-sm leading-6 text-[#5e6f7d]">Prefira as variáveis que começam com <code>linha_</code>. Quando não houver preço anterior, cupom, desconto ou frete, a linha inteira some sem deixar espaço vazio.</CardContent></Card></div>
+              </div>
             </TabsContent>
 
             <TabsContent value="ranking" id="ranking-mercado-livre">
